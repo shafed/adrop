@@ -5,20 +5,11 @@ This repository implements the **PC side** (Arch Linux) from
 [`SPEC.md`](SPEC.md): a single Go binary that is both the resident **daemon**
 and a thin **CLI**.
 
-The Android side is a separate deliverable (not in this repo yet). Because the
-daemon is symmetric — it both serves and originates transfers — two PCs can pair
-p.debug/com.adrop.ui.MainActivity -a android.intent.action.MAIN -c
-android.intent.category.LAUNCHER -D --suspend --splashscreen-show-icon and
-exchange files directly, which is also how the protocol is tested.
-p.debug/com.adrop.ui.MainActivity -a android.intent.action.MAIN -c
-android.intent.category.LAUNCHER -D --suspend --splashscreen-show-icon
+The Android side lives in `android/`. Because the daemon is symmetric — it both
+serves and originates transfers — two PCs can pair and exchange files directly,
+which is also how the protocol is integration-tested.
 
 ## Features (MVP)
-
-p.debug/com.adrop.ui.MainActivity -a android.intent.action.MAIN -c
-android.intent.category.LAUNCHER -D --suspend --splashscreen-show-icon
-p.debug/com.adrop.ui.MainActivity -a android.intent.action.MAIN -c
-android.intent.category.LAUNCHER -D --suspend --splashscreen-show-icon
 
 - **Pairing via QR.** `adrop pair show` prints a scannable QR (and the raw
   `adrop://pair?d=...` URI). The QR carries the device name, its self-signed
@@ -88,27 +79,48 @@ Both devices now trust each other and can `send`/`clip` in either direction.
 
 State lives under `$XDG_CONFIG_HOME/adrop` (or `~/.config/adrop`):
 
-- `identity.key` / `identity.crt` — this device's Ed25519 TLS identity.
+- `identity.key` / `identity.crt` — this device's ECDSA P-256 TLS identity.
 - `devices.json` — trusted peers (name, pinned fingerprint, last address).
 
-Environment overrides:
+### Environment variables
 
-| Variable             | Purpose                   | Default                       |
-| -------------------- | ------------------------- | ----------------------------- |
-| `ADROP_CONFIG_DIR`   | config/state directory    | `~/.config/adrop`             |
-| `ADROP_SOCKET`       | CLI↔daemon Unix socket    | `$XDG_RUNTIME_DIR/adrop.sock` |
-| `ADROP_PORT`         | peer TLS listen port      | `53127`                       |
-| `ADROP_NAME`         | advertised device name    | hostname                      |
-| `ADROP_ADVERTISE_IP` | LAN IP in the pairing QR  | auto-detected                 |
-| `ADROP_DOWNLOAD_DIR` | where received files land | `~/Downloads`                 |
+| Variable             | Purpose                            | Default                        |
+| -------------------- | ---------------------------------- | ------------------------------ |
+| `ADROP_CONFIG_DIR`   | config/state directory             | `~/.config/adrop`              |
+| `ADROP_SOCKET`       | CLI↔daemon Unix socket path        | `$XDG_RUNTIME_DIR/adrop.sock`  |
+| `ADROP_PORT`         | peer TLS listen port               | `53127`                        |
+| `ADROP_NAME`         | advertised device name             | system hostname                |
+| `ADROP_ADVERTISE_IP` | LAN IP in the pairing QR           | auto-detected (non-loopback)   |
+| `ADROP_DOWNLOAD_DIR` | where received files land          | `~/Downloads`                  |
+
+**`ADROP_NAME`** lets you give the PC a friendly name without changing the system
+hostname:
+```sh
+ADROP_NAME=thinkpad-x1 adrop daemon
+# or via a systemd unit override:
+# [Service]
+# Environment=ADROP_NAME=thinkpad-x1
+```
+
+**`ADROP_PORT`** is useful when running a second instance or when port 53127 is
+taken:
+```sh
+ADROP_PORT=8877 adrop daemon
+```
 
 ## Protocol
 
 Application messages run over the pinned-TLS stream, framed as
-`[4-byte length][JSON header][payload]`. A session is: `Hello` exchange →
-`SessionStart` (kind = files | clipboard) → per-file `FileHeader`/`Chunk…`/
-`FileEnd` (or `ClipboardData`) → `SessionEnd`, with `Ack`s carrying success or
-error. See [`internal/proto`](internal/proto/proto.go).
+`[4-byte big-endian length][JSON header][payload]`. A session is:
+
+- `Hello` exchange (both sides identify by fingerprint + name + listen address)
+- `SessionStart` (kind = `files` | `clipboard`)
+- For files: `FileHeader` / `Chunk`… / `FileEnd` (repeated per file), `SessionEnd`
+- For clipboard: `ClipboardData`, `SessionEnd`
+- `Ack` messages carry success or error per file and per session.
+
+The fingerprint exchanged in `Hello` is SHA-256 of the certificate DER bytes,
+encoded as lowercase hex (64 chars). See [`internal/proto`](internal/proto/proto.go).
 
 ## Layout
 
@@ -120,8 +132,9 @@ internal/transport/   pinned mutual-TLS dial/listen
 internal/pairing/     QR pairing payload encode/decode + terminal render
 internal/clipboard/   wl-copy / wl-paste wrappers
 internal/notify/      notify-send wrapper
-internal/ipc/          CLI↔daemon Unix-socket control protocol
-internal/daemon/       daemon: receive, send, pairing, IPC handling
+internal/ipc/         CLI↔daemon Unix-socket control protocol
+internal/daemon/      daemon: receive, send, pairing, IPC handling
+android/              Android app (Kotlin/Compose)
 packaging/systemd/    systemd user unit
 ```
 
@@ -129,8 +142,8 @@ packaging/systemd/    systemd user unit
 
 Implemented: pairing, pinned-TLS transport, bidirectional multi-file transfer
 with SHA-256 verification, auto-rename on collision, clipboard push,
-notifications, Unix-socket IPC, systemd user unit, device revocation.
+notifications, Unix-socket IPC, systemd user unit, device revocation,
+self-healing stored peer address on every inbound connect.
 
 Deferred (SPEC Phase 2): FCM wake, resume/chunked retransmit, folder transfer,
-rich clipboard formats, mDNS discovery, relay fallback, per-file progress. The
-Android client is a separate deliverable.
+rich clipboard formats, mDNS discovery, relay fallback, per-file progress UI.
