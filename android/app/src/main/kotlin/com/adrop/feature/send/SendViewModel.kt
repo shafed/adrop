@@ -18,6 +18,7 @@ import com.adrop.data.identity.IdentityStore
 import com.adrop.data.proto.*
 import com.adrop.data.trust.TrustedDevice
 import com.adrop.data.trust.TrustRepository
+import com.adrop.net.session.ProgressFn
 import com.adrop.net.session.*
 import com.adrop.net.tls.PinningTrustManager
 import com.adrop.net.transport.*
@@ -25,12 +26,23 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 
 data class SendUiState(
-    val devices:      List<TrustedDevice>  = emptyList(),
-    val selectedDevice: TrustedDevice?     = null,
-    val pickedUris:   List<Uri>            = emptyList(),
-    val clipboardText: String              = "",
-    val isSending:    Boolean              = false,
-    val result:       SendResult?          = null,
+    val devices:        List<TrustedDevice> = emptyList(),
+    val selectedDevice: TrustedDevice?      = null,
+    val pickedUris:     List<Uri>           = emptyList(),
+    val clipboardText:  String              = "",
+    val isSending:      Boolean             = false,
+    val result:         SendResult?         = null,
+    /**
+     * Human-readable progress message while a file transfer is in flight.
+     * Populated by the ProgressFn callback in Session.kt's sendFiles().
+     * Null when no transfer is active.
+     *
+     * TODO: replace/augment with per-file byte-level progress once Session.kt
+     * exposes a bytesTransferred callback in addition to the message callback.
+     * See net/session/Session.kt sendFiles() — add a (fileIndex, bytesSent, totalBytes)
+     * overload to ProgressFn there, then surface it here as a 0..1 Float.
+     */
+    val transferProgress: String?           = null,
 )
 
 sealed class SendResult {
@@ -73,14 +85,20 @@ class SendViewModel(
             _state.update { it.copy(result = SendResult.Error("No files selected")) }
             return
         }
-        _state.update { it.copy(isSending = true, result = null) }
+        _state.update { it.copy(isSending = true, result = null, transferProgress = null) }
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
-                runCatching { doSendFiles(device, uris) }
+                runCatching {
+                    doSendFiles(device, uris) { msg ->
+                        // ProgressFn callback — runs on IO dispatcher, safe to update StateFlow.
+                        _state.update { it.copy(transferProgress = msg) }
+                    }
+                }
             }
             _state.update {
                 it.copy(
-                    isSending = false,
+                    isSending        = false,
+                    transferProgress = null,
                     result = if (result.isSuccess) SendResult.Success
                              else SendResult.Error(result.exceptionOrNull()?.message ?: "Unknown error")
                 )
@@ -118,7 +136,7 @@ class SendViewModel(
     // I/O workers
     // ---------------------------------------------------------------------------
 
-    private suspend fun doSendFiles(device: TrustedDevice, uris: List<Uri>) {
+    private suspend fun doSendFiles(device: TrustedDevice, uris: List<Uri>, progress: ProgressFn? = null) {
         val identity = IdentityStore.getOrCreate(context)
         val devices  = trustRepo.getAll()
         val trustMgr = PinningTrustManager(isTrusted = { fp -> devices.find { it.fingerprint == fp } })
@@ -156,6 +174,7 @@ class SendViewModel(
                 inp      = inp,
                 manifest = manifest,
                 openFile = { i -> resolver.openInputStream(uris[i])!! },
+                progress = progress,
             )
         }
     }

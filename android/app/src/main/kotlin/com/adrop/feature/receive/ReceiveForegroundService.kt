@@ -34,6 +34,7 @@ import com.adrop.net.session.*
 import com.adrop.net.tls.PinningTrustManager
 import com.adrop.net.transport.*
 import com.adrop.ui.MainActivity
+import com.adrop.ui.ReceiveWindowState
 import kotlinx.coroutines.*
 import javax.net.ssl.SSLSocket
 import java.net.SocketException
@@ -71,23 +72,28 @@ class ReceiveForegroundService : Service() {
     private fun startWindow() {
         remainingSeconds = DEFAULT_WINDOW_SEC
         startForeground(NOTIFICATION_ID_SERVICE, buildServiceNotification(remainingSeconds))
+        ReceiveWindowState.onStarted(remainingSeconds)
 
         windowJob = scope.launch {
             try {
                 openReceiveWindow()
             } catch (e: Exception) {
                 Log.e(TAG, "receive window error: ${e.message}")
+                ReceiveWindowState.onError(e.message ?: "Receive window error")
             } finally {
+                ReceiveWindowState.onStopped()
                 stopSelf()
             }
         }
 
-        // Countdown timer — updates the notification every second.
+        // Countdown timer — updates notification and in-process state every second.
         timerJob = scope.launch {
             while (remainingSeconds > 0) {
                 delay(1_000)
                 remainingSeconds--
-                if (remainingSeconds % 5 == 0) {   // update every 5 s to reduce churn
+                ReceiveWindowState.onTick(remainingSeconds)
+                // Update notification every 5 s to reduce churn, but always on last 10 s.
+                if (remainingSeconds % 5 == 0 || remainingSeconds <= 10) {
                     updateServiceNotification(remainingSeconds)
                 }
             }
@@ -97,6 +103,7 @@ class ReceiveForegroundService : Service() {
     private fun stopWindow() {
         windowJob?.cancel()
         timerJob?.cancel()
+        ReceiveWindowState.onStopped()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }

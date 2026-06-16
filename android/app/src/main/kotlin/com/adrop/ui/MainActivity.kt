@@ -51,11 +51,12 @@ private fun AdropNavGraph(deepLinkUri: String?) {
     val navController = rememberNavController()
 
     NavHost(navController = navController, startDestination = Routes.HOME) {
-        composable(Routes.HOME) {
+        composable(Routes.HOME) { backStackEntry ->
             HomeScreen(
                 onNavigateSend    = { navController.navigate(Routes.SEND) },
                 onNavigateDevices = { navController.navigate(Routes.DEVICES) },
                 onNavigatePair    = { navController.navigate(Routes.SCAN) },
+                navBackStackEntry = backStackEntry,
             )
         }
         composable(Routes.SEND) {
@@ -66,7 +67,13 @@ private fun AdropNavGraph(deepLinkUri: String?) {
         }
         composable(Routes.SCAN) {
             ScanScreen(
-                onPaired = { _ -> navController.popBackStack(Routes.HOME, inclusive = false) },
+                onPaired = { deviceName ->
+                    // Stash device name so HomeScreen can show a "Paired!" confirmation snackbar.
+                    navController
+                        .getBackStackEntry(Routes.HOME)
+                        .savedStateHandle["pairedDevice"] = deviceName
+                    navController.popBackStack(Routes.HOME, inclusive = false)
+                },
                 onBack   = { navController.popBackStack() },
             )
         }

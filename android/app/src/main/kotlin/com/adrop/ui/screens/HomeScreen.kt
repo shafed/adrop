@@ -3,14 +3,18 @@
  *
  * Shows:
  *   - "Open to receive" toggle (starts/stops the foreground service)
+ *     with a live countdown of the remaining receive-window time
  *   - Quick-access buttons: Send, Devices, Pair
+ *   - Snackbar for receive-window errors surfaced by ReceiveForegroundService
  */
 package com.adrop.ui.screens
 
-import android.app.Activity
 import android.content.Context
-import android.content.Intent
 import android.os.Build
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -20,7 +24,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.navigation.NavBackStackEntry
 import com.adrop.feature.receive.ReceiveForegroundService
+import com.adrop.ui.ReceiveWindowState
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
@@ -31,14 +37,43 @@ fun HomeScreen(
     onNavigateSend:    () -> Unit,
     onNavigateDevices: () -> Unit,
     onNavigatePair:    () -> Unit,
+    navBackStackEntry: NavBackStackEntry? = null,
 ) {
     val context = LocalContext.current
-    var receiveActive by remember { mutableStateOf(false) }
+
+    // Observe live service state (isRunning + countdown) from ReceiveWindowState.
+    val receiveState by ReceiveWindowState.stateFlow.collectAsState()
+    val receiveActive = receiveState.isRunning
 
     // Notification permission (Android 13+)
     val notifPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         rememberPermissionState(android.Manifest.permission.POST_NOTIFICATIONS)
     } else null
+
+    // Snackbar for receive-window errors and pair-success confirmations.
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // Receive-window errors from ReceiveForegroundService.
+    LaunchedEffect(receiveState.lastError) {
+        receiveState.lastError?.let { error ->
+            snackbarHostState.showSnackbar("Receive error: $error")
+            ReceiveWindowState.clearError()
+        }
+    }
+
+    // "Paired!" confirmation from ScanScreen via savedStateHandle.
+    val pairedDevice by navBackStackEntry
+        ?.savedStateHandle
+        ?.getStateFlow<String?>("pairedDevice", null)
+        ?.collectAsState()
+        ?: remember { mutableStateOf(null) }
+
+    LaunchedEffect(pairedDevice) {
+        pairedDevice?.let { name ->
+            snackbarHostState.showSnackbar("Paired with $name!")
+            navBackStackEntry?.savedStateHandle?.set("pairedDevice", null)
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -50,7 +85,8 @@ fun HomeScreen(
                     }
                 }
             )
-        }
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
         Column(
             modifier            = Modifier
@@ -62,7 +98,7 @@ fun HomeScreen(
         ) {
             Spacer(Modifier.height(16.dp))
 
-            // Receive window toggle
+            // Receive window card with live countdown
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors   = CardDefaults.cardColors(
@@ -79,15 +115,26 @@ fun HomeScreen(
                     verticalAlignment   = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
                             if (receiveActive) "Receiving…" else "Ready to receive",
                             style = MaterialTheme.typography.titleMedium,
                         )
-                        Text(
-                            if (receiveActive) "Listening for 5 min" else "Tap to open receive window",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
+                        Spacer(Modifier.height(2.dp))
+                        AnimatedContent(
+                            targetState = if (receiveActive) receiveState.remainingSeconds else -1,
+                            transitionSpec = { fadeIn() togetherWith fadeOut() },
+                            label = "countdown",
+                        ) { seconds ->
+                            Text(
+                                text  = if (seconds >= 0) "Closes in ${formatCountdown(seconds)}" else "Tap to open receive window",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (receiveActive && seconds <= 30)
+                                    MaterialTheme.colorScheme.error
+                                else
+                                    LocalContentColor.current.copy(alpha = 0.7f),
+                            )
+                        }
                     }
                     Switch(
                         checked         = receiveActive,
@@ -98,12 +145,28 @@ fun HomeScreen(
                                     notifPermission.launchPermissionRequest()
                                 }
                                 startReceiveWindow(context)
-                                receiveActive = true
                             } else {
                                 stopReceiveWindow(context)
-                                receiveActive = false
                             }
                         }
+                    )
+                }
+
+                // Linear countdown bar — only shown while window is active.
+                if (receiveActive) {
+                    val progress = receiveState.remainingSeconds.toFloat() /
+                            ReceiveForegroundService.DEFAULT_WINDOW_SEC.toFloat()
+                    LinearProgressIndicator(
+                        progress        = { progress },
+                        modifier        = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp)
+                            .padding(bottom = 12.dp),
+                        color           = if (receiveState.remainingSeconds <= 30)
+                            MaterialTheme.colorScheme.error
+                        else
+                            MaterialTheme.colorScheme.primary,
+                        trackColor      = MaterialTheme.colorScheme.surfaceVariant,
                     )
                 }
             }
@@ -137,6 +200,13 @@ fun HomeScreen(
             }
         }
     }
+}
+
+/** Formats seconds as "4:59" style countdown string. */
+private fun formatCountdown(totalSeconds: Int): String {
+    val min = totalSeconds / 60
+    val sec = totalSeconds % 60
+    return if (min > 0) "%d:%02d".format(min, sec) else "${sec}s"
 }
 
 private fun startReceiveWindow(context: Context) {

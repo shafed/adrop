@@ -11,7 +11,19 @@ import androidx.camera.view.PreviewView
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.*
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -36,11 +48,30 @@ fun ScanScreen(
 ) {
     val state by vm.state.collectAsState()
     val cameraPermission = rememberPermissionState(android.Manifest.permission.CAMERA)
+    val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(Unit) {
         vm.startScanning()
         if (!cameraPermission.status.isGranted) {
             cameraPermission.launchPermissionRequest()
+        }
+    }
+
+    // Show error in snackbar as well as the inline error panel so the user
+    // always gets feedback even if the camera preview is still visible.
+    LaunchedEffect(state) {
+        if (state is PairState.Error) {
+            val msg = (state as PairState.Error).message
+            snackbarHostState.showSnackbar(
+                message     = "Pairing failed: $msg",
+                actionLabel = "Retry",
+                duration    = SnackbarDuration.Long,
+            ).let { result ->
+                if (result == SnackbarResult.ActionPerformed) {
+                    vm.reset()
+                    vm.startScanning()
+                }
+            }
         }
     }
 
@@ -64,7 +95,8 @@ fun ScanScreen(
                     }
                 }
             )
-        }
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
         Box(
             modifier = Modifier

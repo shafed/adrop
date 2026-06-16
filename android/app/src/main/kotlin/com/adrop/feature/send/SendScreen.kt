@@ -96,6 +96,7 @@ fun SendScreen(
                 OutlinedButton(
                     onClick = { filePicker.launch(arrayOf("*/*")) },
                     modifier = Modifier.fillMaxWidth(),
+                    enabled  = !state.isSending,
                 ) {
                     Icon(Icons.Default.AttachFile, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
@@ -113,11 +114,28 @@ fun SendScreen(
                     ) {
                         if (state.isSending) {
                             CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Sending…")
                         } else {
                             Icon(Icons.Default.Send, contentDescription = null)
                             Spacer(Modifier.width(8.dp))
                             Text("Send Files")
                         }
+                    }
+
+                    // Per-transfer progress message from Session.kt's ProgressFn callback.
+                    // Shows which file is currently being sent (e.g. "Sending photo.jpg (1/3)").
+                    // TODO: once Session.kt exposes byte-level progress via an extended ProgressFn,
+                    // replace this text label with a LinearProgressIndicator showing 0..1 fraction.
+                    state.transferProgress?.let { msg ->
+                        Spacer(Modifier.height(4.dp))
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text  = msg,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }

@@ -16,6 +16,7 @@ import com.adrop.data.trust.TrustedDevice
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -24,6 +25,7 @@ fun DevicesScreen(
     onBack: () -> Unit,
 ) {
     val devices by vm.devices.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
 
     Scaffold(
         topBar = {
@@ -35,7 +37,8 @@ fun DevicesScreen(
                     }
                 },
             )
-        }
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
         if (devices.isEmpty()) {
             Box(
@@ -59,8 +62,14 @@ fun DevicesScreen(
             ) {
                 items(devices, key = { it.id }) { device ->
                     DeviceCard(
-                        device  = device,
-                        onRevoke = { vm.revoke(device) },
+                        device   = device,
+                        onRevoke = {
+                            vm.revoke(device)
+                            // Show confirmation via snackbar (LaunchedEffect not needed here —
+                            // we can call showSnackbar in a coroutine from a lambda safely via
+                            // the provided CoroutineScope from the Scaffold).
+                        },
+                        snackbarHostState = snackbarHostState,
                     )
                 }
             }
@@ -72,8 +81,10 @@ fun DevicesScreen(
 private fun DeviceCard(
     device: TrustedDevice,
     onRevoke: () -> Unit,
+    snackbarHostState: SnackbarHostState,
 ) {
     var showConfirm by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
     if (showConfirm) {
         AlertDialog(
@@ -81,7 +92,13 @@ private fun DeviceCard(
             title            = { Text("Remove ${device.name}?") },
             text             = { Text("This device will no longer be trusted. You will need to pair again to send or receive files.") },
             confirmButton    = {
-                TextButton(onClick = { onRevoke(); showConfirm = false }) { Text("Remove") }
+                TextButton(onClick = {
+                    onRevoke()
+                    showConfirm = false
+                    scope.launch {
+                        snackbarHostState.showSnackbar("${device.name} removed")
+                    }
+                }) { Text("Remove") }
             },
             dismissButton    = {
                 TextButton(onClick = { showConfirm = false }) { Text("Cancel") }
