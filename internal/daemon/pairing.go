@@ -136,13 +136,7 @@ func (d *Daemon) tryCompletePairing(fp, name, advertisedAddr string, remote net.
 	if _, already := d.store.IsTrusted(fp); already {
 		return false
 	}
-	// Prefer the peer's self-advertised listen address; fall back to the
-	// connection's source host with our default port if it wasn't provided.
-	addr := advertisedAddr
-	if addr == "" {
-		host, _, _ := net.SplitHostPort(remote.String())
-		addr = net.JoinHostPort(host, fmt.Sprint(d.port))
-	}
+	addr := d.resolvePeerAddr(advertisedAddr, remote)
 	dev := config.Device{
 		Name:        name,
 		Fingerprint: fp,
@@ -156,6 +150,30 @@ func (d *Daemon) tryCompletePairing(fp, name, advertisedAddr string, remote net.
 	ps.paired = name
 	d.closePairWindow(ps)
 	return true
+}
+
+// resolvePeerAddr decides the address to store for a peer, given what it
+// advertised in its Hello and the live connection it arrived on.
+//
+// The peer's advertised port is authoritative (it's the port the peer listens
+// on, which is not the same as the ephemeral source port of this connection).
+// The host, however, is only trustworthy if the peer named a concrete IP. When
+// the advertised host is missing or unspecified ("0.0.0.0"/"::") — e.g. the
+// phone couldn't determine its own LAN IP — we substitute the connection's
+// source IP but keep the advertised port. Only if no usable port was advertised
+// at all do we fall back to our own default port against the source IP.
+func (d *Daemon) resolvePeerAddr(advertised string, remote net.Addr) string {
+	remoteHost, _, _ := net.SplitHostPort(remote.String())
+
+	host, port, err := net.SplitHostPort(advertised)
+	if err != nil || port == "" || port == "0" {
+		// No usable advertised port: best we can do is source IP + our port.
+		return net.JoinHostPort(remoteHost, fmt.Sprint(d.port))
+	}
+	if ip := net.ParseIP(host); host == "" || ip == nil || ip.IsUnspecified() {
+		host = remoteHost
+	}
+	return net.JoinHostPort(host, port)
 }
 
 // pairWindowDone returns the done channel of the current pairing window (or a

@@ -64,10 +64,11 @@ func (d *Daemon) handlePeer(ctx context.Context, raw net.Conn) {
 		d.logger.Printf("peer: rejecting untrusted %s", fp[:16])
 		return
 	}
-	// Refresh last-known address from the live connection.
-	if host, _, err := net.SplitHostPort(conn.RemoteAddr().String()); err == nil {
-		d.store.UpdateAddr(fp, net.JoinHostPort(host, fmt.Sprint(d.port)))
-	}
+	// Self-heal the last-known address from this connection: trust the peer's
+	// advertised listen port, substituting the live source IP when the peer
+	// didn't name a concrete host. This corrects a stale/wrong stored port
+	// (e.g. after a DHCP change) on every inbound connect.
+	d.store.UpdateAddr(fp, d.resolvePeerAddr(hello.Addr, conn.RemoteAddr()))
 
 	if err := d.receiveSession(ctx, conn, peerName); err != nil {
 		d.logger.Printf("receive from %s: %v", peerName, err)
