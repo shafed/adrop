@@ -78,4 +78,42 @@ class ProtoTest {
             fail("expected EOFException")
         } catch (e: EOFException) { /* expected */ }
     }
+
+    @Test
+    fun `round-trip progress frame`() {
+        val out = ByteArrayOutputStream()
+        writeControl(out, Header(
+            type       = MsgType.PROGRESS,
+            fileIndex  = 2,
+            bytesDone  = 512L * 1024,
+            totalBytes = 1024L * 1024,
+        ))
+        val hdr = readHeader(ByteArrayInputStream(out.toByteArray()))
+        assertEquals(MsgType.PROGRESS, hdr.type)
+        assertEquals(2, hdr.fileIndex)
+        assertEquals(512L * 1024, hdr.bytesDone)
+        assertEquals(1024L * 1024, hdr.totalBytes)
+        assertNull(hdr.length)  // control frame: no payload declared
+    }
+
+    @Test
+    fun `progress fields absent from non-progress header`() {
+        // A chunk header must NOT serialise bytes_done / total_bytes keys.
+        val json = protoJson.encodeToString(
+            Header(type = MsgType.CHUNK, fileIndex = 0, length = 1024L)
+        )
+        assertFalse("bytes_done must be absent", json.contains("bytes_done"))
+        assertFalse("total_bytes must be absent", json.contains("total_bytes"))
+    }
+
+    @Test
+    fun `golden JSON keys for progress`() {
+        val json = protoJson.encodeToString(
+            Header(type = MsgType.PROGRESS, fileIndex = 3, bytesDone = 100L, totalBytes = 200L)
+        )
+        assertTrue(json.contains(""""bytes_done":100"""))
+        assertTrue(json.contains(""""total_bytes":200"""))
+        assertFalse(json.contains(""""bytesDone""""))
+        assertFalse(json.contains(""""totalBytes""""))
+    }
 }

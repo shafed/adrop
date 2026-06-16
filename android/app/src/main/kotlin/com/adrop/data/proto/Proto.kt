@@ -48,6 +48,14 @@ object MsgType {
     const val CLIPBOARD     = "clipboard"
     const val SESSION_END   = "session_end"
     const val ACK           = "ack"
+    /**
+     * Advisory per-file transfer progress emitted by the sender after each
+     * chunk. Old peers that receive this frame from a newer sender should
+     * ignore it (they will see an unknown [type] and skip it). Senders must
+     * use [writeControl] so no payload bytes follow this header, which ensures
+     * receivers can safely skip it without consuming extra bytes.
+     */
+    const val PROGRESS      = "progress"
 }
 
 object SessionKind {
@@ -84,6 +92,10 @@ data class Header(
     @SerialName("ok")          val ok:          Boolean?        = null,
     @SerialName("error")       val error:       String?         = null,
     @SerialName("length")      val length:      Long?           = null,
+    // Progress fields — present only in TypeProgress ("progress") frames.
+    // Null / absent in all other message types (matches Go omitempty).
+    @SerialName("bytes_done")  val bytesDone:   Long?           = null,
+    @SerialName("total_bytes") val totalBytes:  Long?           = null,
 )
 
 // ---------------------------------------------------------------------------

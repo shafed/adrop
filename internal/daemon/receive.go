@@ -95,6 +95,13 @@ func (d *Daemon) receiveSession(ctx context.Context, conn *tls.Conn, peerName st
 	}
 }
 
+// progressCallback is called when a TypeProgress frame is received from a
+// remote sender. fileIndex indexes into the session manifest; bytesDone and
+// totalBytes reflect the remote sender's view of per-file progress.
+// The default implementation just logs; callers may override this via
+// receiveFilesWithProgress when they want to surface progress elsewhere.
+type progressCallback func(fileIndex int, bytesDone, totalBytes int64)
+
 func (d *Daemon) receiveClipboard(ctx context.Context, conn *tls.Conn, peerName string) error {
 	hdr, err := proto.ReadHeader(conn)
 	if err != nil {
@@ -126,6 +133,10 @@ func (d *Daemon) receiveClipboard(ctx context.Context, conn *tls.Conn, peerName 
 }
 
 func (d *Daemon) receiveFiles(ctx context.Context, conn *tls.Conn, peerName string, manifest []proto.FileMeta) error {
+	return d.receiveFilesWithProgress(ctx, conn, peerName, manifest, nil)
+}
+
+func (d *Daemon) receiveFilesWithProgress(ctx context.Context, conn *tls.Conn, peerName string, manifest []proto.FileMeta, onProgress progressCallback) error {
 	if len(manifest) == 0 {
 		return fmt.Errorf("empty file manifest")
 	}
@@ -137,6 +148,16 @@ func (d *Daemon) receiveFiles(ctx context.Context, conn *tls.Conn, peerName stri
 		}
 		if hdr.Type == proto.TypeSessionEnd {
 			break
+		}
+		// TypeProgress is advisory: log it and keep waiting for file_header.
+		if hdr.Type == proto.TypeProgress {
+			if onProgress != nil {
+				onProgress(hdr.FileIndex, hdr.BytesDone, hdr.TotalBytes)
+			} else {
+				d.logger.Printf("progress: file[%d] %d/%d bytes from %s",
+					hdr.FileIndex, hdr.BytesDone, hdr.TotalBytes, peerName)
+			}
+			continue
 		}
 		if hdr.Type != proto.TypeFileHeader {
 			return fmt.Errorf("expected file_header, got %s", hdr.Type)
@@ -198,6 +219,9 @@ func (d *Daemon) receiveOneFile(conn *tls.Conn, meta proto.FileMeta) (string, er
 				return "", err
 			}
 			got += hdr.Length
+		case proto.TypeProgress:
+			// Advisory frame from a newer sender — log it and continue.
+			d.logger.Printf("progress: file[%d] %d/%d bytes", hdr.FileIndex, hdr.BytesDone, hdr.TotalBytes)
 		case proto.TypeFileEnd:
 			if err := f.Close(); err != nil {
 				os.Remove(tmp)

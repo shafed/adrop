@@ -18,6 +18,9 @@ import (
 // progressFn receives human-readable progress lines during a send.
 type progressFn func(string)
 
+// fileProgressFn receives per-file byte-level progress: (fileIndex, bytesDone, totalBytes).
+type fileProgressFn func(fileIndex int, bytesDone, totalBytes int64)
+
 // dialPeer resolves a target (name or fingerprint prefix), dials it, performs
 // the Hello exchange, and returns the open connection.
 func (d *Daemon) dialPeer(target string) (*tls.Conn, config.Device, error) {
@@ -72,11 +75,30 @@ func (d *Daemon) SendFiles(ctx context.Context, target string, paths []string, p
 		return err
 	}
 
+	// fileProgress emits a human-readable progress line and sends a TypeProgress
+	// frame to the peer so the remote side can show per-file progress too.
+	fileProgress := func(fileIndex int, bytesDone, totalBytes int64) {
+		if progress != nil {
+			pct := int64(0)
+			if totalBytes > 0 {
+				pct = bytesDone * 100 / totalBytes
+			}
+			progress(fmt.Sprintf("%s: %d%%", manifest[fileIndex].Name, pct))
+		}
+		// Best-effort: ignore send errors for advisory progress frames.
+		_ = proto.WriteControl(conn, proto.Header{
+			Type:       proto.TypeProgress,
+			FileIndex:  fileIndex,
+			BytesDone:  bytesDone,
+			TotalBytes: totalBytes,
+		})
+	}
+
 	for i, m := range manifest {
 		if progress != nil {
 			progress(fmt.Sprintf("sending %s (%d/%d)…", m.Name, i+1, len(manifest)))
 		}
-		if err := d.sendOneFile(conn, i, paths[i], m); err != nil {
+		if err := d.sendOneFile(conn, i, paths[i], m, fileProgress); err != nil {
 			return fmt.Errorf("send %s: %w", m.Name, err)
 		}
 		ack, err := proto.ReadHeader(conn)
@@ -100,7 +122,7 @@ func (d *Daemon) SendFiles(ctx context.Context, target string, paths []string, p
 	return nil
 }
 
-func (d *Daemon) sendOneFile(conn *tls.Conn, index int, path string, m proto.FileMeta) error {
+func (d *Daemon) sendOneFile(conn *tls.Conn, index int, path string, m proto.FileMeta, fp fileProgressFn) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -111,6 +133,7 @@ func (d *Daemon) sendOneFile(conn *tls.Conn, index int, path string, m proto.Fil
 		return err
 	}
 	buf := make([]byte, proto.ChunkSize)
+	var bytesSent int64
 	for {
 		n, rerr := f.Read(buf)
 		if n > 0 {
@@ -118,6 +141,10 @@ func (d *Daemon) sendOneFile(conn *tls.Conn, index int, path string, m proto.Fil
 				Type: proto.TypeChunk, FileIndex: index, Length: int64(n),
 			}, bytesReader(buf[:n])); err != nil {
 				return err
+			}
+			bytesSent += int64(n)
+			if fp != nil {
+				fp(index, bytesSent, m.Size)
 			}
 		}
 		if rerr == io.EOF {

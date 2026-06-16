@@ -48,6 +48,13 @@ const (
 	TypeClipboardData Type = "clipboard"
 	TypeSessionEnd    Type = "session_end"
 	TypeAck           Type = "ack"
+	// TypeProgress is an optional advisory message sent by the sender after
+	// each chunk to report per-file transfer progress. Old peers that don't
+	// understand it will never receive it because the sender only emits it
+	// in a dedicated message (not mixed into chunk frames). Receivers that
+	// don't recognise the type should skip it; the existing
+	// ignoreUnknownKeys / omitempty guards ensure backward compatibility.
+	TypeProgress Type = "progress"
 )
 
 // SessionKind distinguishes a file-transfer session from a clipboard push.
@@ -95,6 +102,14 @@ type Header struct {
 
 	// Length is the number of payload bytes that follow this header.
 	Length int64 `json:"length,omitempty"`
+
+	// Progress fields — carried in TypeProgress messages.
+	// BytesDone is the number of bytes of the current file sent so far.
+	// TotalBytes is the total size of the current file (mirrors FileMeta.Size).
+	// Both fields use omitempty so old peers that receive these frames just
+	// see an unknown type and can safely skip them.
+	BytesDone  int64 `json:"bytes_done,omitempty"`
+	TotalBytes int64 `json:"total_bytes,omitempty"`
 }
 
 // ErrTooLarge is returned when a frame exceeds protocol limits.

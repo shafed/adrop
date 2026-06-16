@@ -21,6 +21,18 @@ import java.security.MessageDigest
 
 typealias ProgressFn = (message: String) -> Unit
 
+/**
+ * Called with per-file byte-level progress from a TypeProgress frame.
+ *
+ * [fileIndex] indexes into the session manifest.
+ * [bytesDone] is how many bytes of the file have been transferred so far.
+ * [totalBytes] is the total file size.
+ *
+ * This callback is invoked on the same thread as the I/O (Dispatchers.IO).
+ * Callers should post updates to a StateFlow or LiveData for UI consumption.
+ */
+typealias FileProgressFn = (fileIndex: Int, bytesDone: Long, totalBytes: Long) -> Unit
+
 // ---------------------------------------------------------------------------
 // Sender
 // ---------------------------------------------------------------------------
@@ -29,6 +41,10 @@ typealias ProgressFn = (message: String) -> Unit
  * Sends a file session to an already-open [OutputStream] / [InputStream] pair.
  *
  * Caller must have already completed the Hello exchange before calling this.
+ *
+ * After each chunk is written, a [MsgType.PROGRESS] frame is sent to the peer
+ * so the remote side can show per-file progress. The [fileProgress] callback
+ * (if supplied) is also invoked locally with the same numbers.
  */
 suspend fun sendFiles(
     out: OutputStream,
@@ -36,6 +52,7 @@ suspend fun sendFiles(
     manifest: List<FileMeta>,
     openFile: (index: Int) -> InputStream,
     progress: ProgressFn? = null,
+    fileProgress: FileProgressFn? = null,
 ) {
     // SessionStart
     writeControl(out, Header(
@@ -49,7 +66,8 @@ suspend fun sendFiles(
         // FileHeader
         writeControl(out, Header(type = MsgType.FILE_HEADER, fileIndex = i))
 
-        // Chunks
+        // Chunks — emit a TypeProgress frame after each one.
+        var bytesSent = 0L
         openFile(i).use { stream ->
             val buf = ByteArray(CHUNK_SIZE)
             while (true) {
@@ -60,6 +78,15 @@ suspend fun sendFiles(
                     Header(type = MsgType.CHUNK, fileIndex = i, length = n.toLong()),
                     buf.inputStream(0, n),
                 )
+                bytesSent += n
+                // Send advisory progress frame (best-effort; no payload).
+                writeControl(out, Header(
+                    type       = MsgType.PROGRESS,
+                    fileIndex  = i,
+                    bytesDone  = bytesSent,
+                    totalBytes = meta.size,
+                ))
+                fileProgress?.invoke(i, bytesSent, meta.size)
             }
         }
 
@@ -124,6 +151,10 @@ data class ReceivedFile(
  * For file sessions, files are saved to the shared Downloads directory via MediaStore.
  * For clipboard sessions, [onClipboard] is invoked with the raw bytes + MIME.
  *
+ * [onProgress] is called whenever a [MsgType.PROGRESS] frame is received from
+ * the sender (i.e. when the phone is the receiver and the PC sent the file).
+ * It is safe to post from this callback to a StateFlow for UI updates.
+ *
  * Returns a [SessionResult] describing what arrived.
  */
 fun receiveSession(
@@ -132,13 +163,14 @@ fun receiveSession(
     out: OutputStream,
     peerName: String,
     onClipboard: (bytes: ByteArray, mime: String) -> Unit,
+    onProgress: FileProgressFn? = null,
 ): SessionResult {
     val start = readHeader(inp)
     if (start.type != MsgType.SESSION_START) {
         throw SessionException("expected session_start, got ${start.type}")
     }
     return when (start.kind) {
-        SessionKind.FILES     -> receiveFiles(context, inp, out, peerName, start.files ?: emptyList())
+        SessionKind.FILES     -> receiveFiles(context, inp, out, peerName, start.files ?: emptyList(), onProgress)
         SessionKind.CLIPBOARD -> receiveClipboard(inp, out, peerName, onClipboard)
         else -> throw SessionException("unknown session kind: ${start.kind}")
     }
@@ -150,6 +182,7 @@ private fun receiveFiles(
     out: OutputStream,
     peerName: String,
     manifest: List<FileMeta>,
+    onProgress: FileProgressFn? = null,
 ): SessionResult {
     if (manifest.isEmpty()) throw SessionException("empty file manifest")
 
@@ -158,6 +191,15 @@ private fun receiveFiles(
     while (true) {
         val hdr = readHeader(inp)
         if (hdr.type == MsgType.SESSION_END) break
+        // TypeProgress frames may appear between file_header messages; forward
+        // them to the caller and keep waiting for the next file_header.
+        if (hdr.type == MsgType.PROGRESS) {
+            val fi = hdr.fileIndex ?: 0
+            val done = hdr.bytesDone ?: 0L
+            val total = hdr.totalBytes ?: 0L
+            onProgress?.invoke(fi, done, total)
+            continue
+        }
         if (hdr.type != MsgType.FILE_HEADER) {
             throw SessionException("expected file_header, got ${hdr.type}")
         }
@@ -167,7 +209,7 @@ private fun receiveFiles(
         }
         val meta = manifest[idx]
 
-        val result = runCatching { receiveOneFile(context, inp, meta) }
+        val result = runCatching { receiveOneFile(context, inp, meta, onProgress) }
         if (result.isSuccess) {
             received.add(result.getOrThrow())
             writeControl(out, Header(type = MsgType.ACK, fileIndex = idx, ok = true))
@@ -187,6 +229,7 @@ private fun receiveOneFile(
     context: Context,
     inp: InputStream,
     meta: FileMeta,
+    onProgress: FileProgressFn? = null,
 ): ReceivedFile {
     val digest = MessageDigest.getInstance("SHA-256")
 
@@ -230,6 +273,13 @@ private fun receiveOneFile(
                             got += n
                             remaining -= n
                         }
+                    }
+                    MsgType.PROGRESS -> {
+                        // Advisory frame from a newer sender; forward to caller.
+                        val fi = hdr.fileIndex ?: 0
+                        val done = hdr.bytesDone ?: got
+                        val total = hdr.totalBytes ?: meta.size
+                        onProgress?.invoke(fi, done, total)
                     }
                     MsgType.FILE_END -> {
                         fileOut.flush()
