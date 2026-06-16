@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">adrop</string>
+    <string name="channel_receive_name">Receive window</string>
+    <string name="channel_receive_description">Shown while the receive window is open</string>
+    <string name="channel_transfers_name">Transfers</string>
+    <string name="channel_transfers_description">Completed file and clipboard transfers</string>
+</resources>

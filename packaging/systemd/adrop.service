@@ -1,0 +1,18 @@
+[Unit]
+Description=adrop — AirDrop-like file & clipboard transfer daemon
+Documentation=https://github.com/shafed/adrop
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/adrop daemon
+Restart=on-failure
+RestartSec=2
+# The daemon needs the user's Wayland session for wl-clipboard / notify-send.
+# These are provided by the graphical session's environment (imported via
+# `systemctl --user import-environment` or a display-manager integration).
+Environment=ADROP_PORT=53127
+
+[Install]
+WantedBy=graphical-session.target

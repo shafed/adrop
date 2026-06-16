@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.adrop</groupId>
+  <artifactId>jvm-tests</artifactId>
+  <version>1.0.0-SNAPSHOT</version>
+  <packaging>jar</packaging>
+
+  <name>adrop JVM codec tests</name>
+  <description>Pure-JVM unit tests for the adrop wire-protocol codec</description>
+
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <kotlin.version>2.1.21</kotlin.version>
+    <kotlinx.serialization.version>1.8.1</kotlinx.serialization.version>
+    <junit.version>4.13.2</junit.version>
+    <!-- Target Java 17 bytecode even though we run on JDK 26 -->
+    <maven.compiler.source>17</maven.compiler.source>
+    <maven.compiler.target>17</maven.compiler.target>
+  </properties>
+
+  <dependencies>
+    <!-- Kotlin stdlib -->
+    <dependency>
+      <groupId>org.jetbrains.kotlin</groupId>
+      <artifactId>kotlin-stdlib</artifactId>
+      <version>${kotlin.version}</version>
+    </dependency>
+
+    <!-- kotlinx-serialization-json (no Android deps) -->
+    <dependency>
+      <groupId>org.jetbrains.kotlinx</groupId>
+      <artifactId>kotlinx-serialization-json-jvm</artifactId>
+      <version>${kotlinx.serialization.version}</version>
+    </dependency>
+
+    <!-- JUnit 4 -->
+    <dependency>
+      <groupId>junit</groupId>
+      <artifactId>junit</artifactId>
+      <version>${junit.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <sourceDirectory>${project.basedir}/src/main/kotlin</sourceDirectory>
+    <testSourceDirectory>${project.basedir}/src/test/kotlin</testSourceDirectory>
+
+    <plugins>
+      <!-- Kotlin Maven plugin: compiles Kotlin sources -->
+      <plugin>
+        <groupId>org.jetbrains.kotlin</groupId>
+        <artifactId>kotlin-maven-plugin</artifactId>
+        <version>${kotlin.version}</version>
+        <extensions>true</extensions>
+
+        <configuration>
+          <jvmTarget>17</jvmTarget>
+          <compilerPlugins>
+            <plugin>kotlinx-serialization</plugin>
+          </compilerPlugins>
+        </configuration>
+
+        <dependencies>
+          <!-- Serialization compiler plugin -->
+          <dependency>
+            <groupId>org.jetbrains.kotlin</groupId>
+            <artifactId>kotlin-maven-serialization</artifactId>
+            <version>${kotlin.version}</version>
+          </dependency>
+        </dependencies>
+
+        <executions>
+          <!-- Disable KAPT (annotation processing) — not needed here; avoids
+               the tools.jar requirement that disappeared in JDK 9+. -->
+          <execution>
+            <id>default-kapt</id>
+            <phase>none</phase>
+          </execution>
+          <execution>
+            <id>default-test-kapt</id>
+            <phase>none</phase>
+          </execution>
+          <execution>
+            <id>compile</id>
+            <goals><goal>compile</goal></goals>
+            <phase>compile</phase>
+          </execution>
+          <execution>
+            <id>test-compile</id>
+            <goals><goal>test-compile</goal></goals>
+            <phase>test-compile</phase>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- Surefire: runs JUnit 4 tests -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.5.3</version>
+        <configuration>
+          <includes>
+            <include>**/*Test.kt</include>
+            <include>**/*Test.java</include>
+          </includes>
+          <!-- JDK 26 opens needed by some reflection internals -->
+          <argLine>--add-opens java.base/java.lang=ALL-UNNAMED</argLine>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

@@ -1,0 +1,28 @@
+# Build output
+/adrop
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+go.work.sum
+
+# Android build artifacts
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
+*.aab
+*.keystore
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
