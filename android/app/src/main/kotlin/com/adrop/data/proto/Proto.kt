@@ -56,6 +56,12 @@ object MsgType {
      * receivers can safely skip it without consuming extra bytes.
      */
     const val PROGRESS      = "progress"
+
+    /** Sent before FILE_HEADER when session Resume=true; receiver checks for a partial file. */
+    const val RESUME_QUERY  = "resume_query"
+
+    /** Receiver's reply to RESUME_QUERY: bytes_done=N means N bytes already received. */
+    const val RESUME_OFFER  = "resume_offer"
 }
 
 object SessionKind {
@@ -93,10 +99,12 @@ data class Header(
     @SerialName("ok")          val ok:          Boolean?        = null,
     @SerialName("error")       val error:       String?         = null,
     @SerialName("length")      val length:      Long?           = null,
-    // Progress fields — present only in TypeProgress ("progress") frames.
-    // Null / absent in all other message types (matches Go omitempty).
+    // Progress / resume fields — absent in message types that don't use them (omitempty).
     @SerialName("bytes_done")  val bytesDone:   Long?           = null,
     @SerialName("total_bytes") val totalBytes:  Long?           = null,
+    // Resume handshake fields.
+    @SerialName("resume")      val resume:      Boolean?        = null,
+    @SerialName("sha256")      val sha256:      String?         = null,
 )
 
 // ---------------------------------------------------------------------------

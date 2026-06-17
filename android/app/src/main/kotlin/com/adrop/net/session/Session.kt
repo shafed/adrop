@@ -54,21 +54,45 @@ suspend fun sendFiles(
     progress: ProgressFn? = null,
     fileProgress: FileProgressFn? = null,
 ) {
-    // SessionStart
+    // SessionStart — resume=true signals receiver to expect RESUME_QUERY per file.
     writeControl(out, Header(
-        type  = MsgType.SESSION_START,
-        kind  = SessionKind.FILES,
-        files = manifest,
+        type   = MsgType.SESSION_START,
+        kind   = SessionKind.FILES,
+        files  = manifest,
+        resume = true,
     ))
 
     for ((i, meta) in manifest.withIndex()) {
         progress?.invoke("Sending ${meta.name} (${i + 1}/${manifest.size})")
+
+        // Resume handshake: ask receiver how many bytes it already has.
+        writeControl(out, Header(
+            type      = MsgType.RESUME_QUERY,
+            fileIndex = i,
+            sha256    = meta.sha256,
+        ))
+        val offer = readHeader(inp)
+        if (offer.type != MsgType.RESUME_OFFER) {
+            throw SessionException("expected resume_offer for file $i, got ${offer.type}")
+        }
+        val resumeOffset = offer.bytesDone ?: 0L
+
         // FileHeader
         writeControl(out, Header(type = MsgType.FILE_HEADER, fileIndex = i))
 
         // Chunks — emit a TypeProgress frame after each one.
-        var bytesSent = 0L
+        // Skip resumeOffset bytes from the source stream before sending.
+        var bytesSent = resumeOffset
         openFile(i).use { stream ->
+            if (resumeOffset > 0L) {
+                var remaining = resumeOffset
+                val skipBuf = ByteArray(CHUNK_SIZE)
+                while (remaining > 0L) {
+                    val n = stream.read(skipBuf, 0, remaining.coerceAtMost(skipBuf.size.toLong()).toInt())
+                    if (n < 0) break
+                    remaining -= n
+                }
+            }
             val buf = ByteArray(CHUNK_SIZE)
             while (true) {
                 val n = stream.read(buf)
@@ -198,6 +222,13 @@ private fun receiveFiles(
             val done = hdr.bytesDone ?: 0L
             val total = hdr.totalBytes ?: 0L
             onProgress?.invoke(fi, done, total)
+            continue
+        }
+        // Resume query from a newer sender: always reply with 0 because
+        // Android MediaStore writes are not resumable in partial form.
+        if (hdr.type == MsgType.RESUME_QUERY) {
+            val idx = hdr.fileIndex ?: 0
+            writeControl(out, Header(type = MsgType.RESUME_OFFER, fileIndex = idx, bytesDone = 0L))
             continue
         }
         if (hdr.type != MsgType.FILE_HEADER) {
