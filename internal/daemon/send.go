@@ -39,9 +39,13 @@ const (
 	wakePollInterval = 500 * time.Millisecond
 	wakeTimeout      = 15 * time.Second
 
-	// mDNS address-recovery tuning: after a dial fails, retry the dial while the
-	// stored address keeps changing (an mDNS resolve, or a concurrent inbound
-	// connect, may correct a same-LAN IP change), bounded by mdnsRecoverTimeout.
+	// mDNS address-recovery tuning. After a dial fails we first run a blocking
+	// one-shot mDNS resolve (refreshAddrViaMDNS, up to its own 3s timeout), which
+	// usually corrects the stored address before this loop even runs. The loop
+	// then retries the dial while the stored address keeps changing, which also
+	// catches a concurrent inbound connect self-healing the address. The timeout
+	// is measured from after the resolve, so total recovery latency is the mDNS
+	// resolve plus up to mdnsRecoverTimeout.
 	mdnsRecoverPoll    = 200 * time.Millisecond
 	mdnsRecoverTimeout = 2 * time.Second
 )
@@ -57,14 +61,15 @@ func (d *Daemon) dialPeer(ctx context.Context, target string) (*tls.Conn, config
 		// address via a one-shot mDNS resolve, then retry the dial whenever the
 		// stored address changes, before falling back to the (slower, relay-
 		// dependent) FCM wake path. This recovers a same-network IP change even
-		// when no relay is configured. Bounded by mdnsRecoverTimeout so a truly
-		// unreachable peer still proceeds to the wake path / final error.
+		// when no relay is configured. Bounded by mdnsRecoverTimeout (measured
+		// from after the resolve) so a truly unreachable peer still proceeds to
+		// the wake path / final error.
 		d.refreshAddrViaMDNS(ctx)
 		deadline := time.Now().Add(mdnsRecoverTimeout)
 		for {
 			if cur, ok := d.store.Lookup(target); ok && cur.Addr != dev.Addr {
 				dev = cur
-				d.logger.Printf("retrying %s at refreshed addr %s", dev.Name, dev.Addr)
+				d.logger.Printf("retrying %s at addr %s", dev.Name, dev.Addr)
 				conn, fp, err = transport.Dial(dev.Addr, d.store.Certificate(), d)
 				if err == nil {
 					break
@@ -73,7 +78,11 @@ func (d *Daemon) dialPeer(ctx context.Context, target string) (*tls.Conn, config
 			if time.Now().After(deadline) {
 				break
 			}
-			time.Sleep(mdnsRecoverPoll)
+			select {
+			case <-ctx.Done():
+				return nil, dev, ctx.Err()
+			case <-time.After(mdnsRecoverPoll):
+			}
 		}
 	}
 	if err != nil {
@@ -96,7 +105,11 @@ func (d *Daemon) dialPeer(ctx context.Context, target string) (*tls.Conn, config
 				d.logger.Printf("FCM wake sent; waiting up to %s for phone to open receive window…", wakeTimeout)
 				deadline := time.Now().Add(wakeTimeout)
 				for {
-					time.Sleep(wakePollInterval)
+					select {
+					case <-ctx.Done():
+						return nil, dev, ctx.Err()
+					case <-time.After(wakePollInterval):
+					}
 					if cur, ok := d.store.Lookup(target); ok {
 						dev = cur
 					}

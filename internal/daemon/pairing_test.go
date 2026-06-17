@@ -171,3 +171,44 @@ func TestDialRecoversFromStaleAddr(t *testing.T) {
 		t.Fatalf("send did not recover from stale addr: %v", err)
 	}
 }
+
+// TestDialAbortsOnContextCancel verifies the recovery/wake loops honor context
+// cancellation instead of burning the full mdnsRecoverTimeout (and then the
+// wake timeout). With a permanently dead stored address and no relay, a cancel
+// must abort the dial promptly with the context error.
+func TestDialAbortsOnContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pc := newTestDaemon(t, ctx, "pc")
+	phone := newTestDaemon(t, ctx, "phone")
+	pair(t, pc, phone)
+
+	fp := phone.store.Fingerprint()
+	// Dead port, never corrected: the recovery loop would otherwise spin until
+	// its deadline.
+	pc.store.UpdateAddr(fp, "127.0.0.1:1")
+
+	sendCtx, sendCancel := context.WithCancel(ctx)
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		sendCancel()
+	}()
+
+	srcDir := t.TempDir()
+	src := srcDir + "/cancel.bin"
+	mustWrite(t, src, randomBytes(t, 1024))
+
+	start := time.Now()
+	err := pc.d.SendFiles(sendCtx, "phone", []string{src}, nil)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("send to dead addr unexpectedly succeeded")
+	}
+	// Should abort well before the full mdnsRecoverTimeout (2s); allow slack for
+	// the in-flight dial's TCP timeout, but it must not run to completion.
+	if elapsed > mdnsRecoverTimeout {
+		t.Fatalf("send did not abort on cancel: took %s (>= mdnsRecoverTimeout %s)", elapsed, mdnsRecoverTimeout)
+	}
+}
