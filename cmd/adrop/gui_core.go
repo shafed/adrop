@@ -14,15 +14,20 @@ import (
 	"github.com/shafed/adrop/internal/ipc"
 )
 
-// decodeFileURIs parses one or more whitespace/newline-separated tokens, each
-// expected to be a file:// URI (or a bare local path), into local filesystem
-// paths. Percent-escapes are decoded and a leading "file://[host]" scheme is
-// stripped. Any token with a non-file scheme, or that fails os.Stat, is
-// reported in the returned error; the successfully-resolved paths are still
-// returned so the caller can decide whether to proceed.
+// decodeFileURIs parses one or more newline-separated tokens, each expected to
+// be a file:// URI (or a bare local path), into local filesystem paths.
+// Splitting is on newlines only (not all whitespace) so a bare path containing
+// spaces survives intact. Percent-escapes are decoded and a leading
+// "file://[host]" scheme is stripped. Any token with a non-file scheme, or that
+// fails os.Stat, is reported in the returned error; the successfully-resolved
+// paths are still returned so the caller can decide whether to proceed.
 func decodeFileURIs(input string) (paths []string, err error) {
 	var bad []string
-	for _, tok := range strings.Fields(input) {
+	for _, tok := range strings.Split(input, "\n") {
+		tok = strings.TrimSpace(tok)
+		if tok == "" {
+			continue
+		}
 		p, derr := decodeFileURI(tok)
 		if derr != nil {
 			bad = append(bad, fmt.Sprintf("%s (%v)", tok, derr))

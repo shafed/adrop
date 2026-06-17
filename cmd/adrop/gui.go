@@ -40,15 +40,15 @@ func runGUI(_ []string) error {
 	g := newGUI(a, w)
 	w.SetContent(g.content())
 
-	// Native file drag-drop: hand dropped URIs to the same decode+send path as
-	// the paste field.
+	// Native file drag-drop: the URIs are already discrete, so hand their paths
+	// straight to the send path — no newline round-trip through whitespace
+	// splitting, which would mangle paths containing spaces.
 	w.SetOnDropped(func(_ fyne.Position, uris []fyne.URI) {
-		var b strings.Builder
+		paths := make([]string, 0, len(uris))
 		for _, u := range uris {
-			b.WriteString(u.Path())
-			b.WriteByte('\n')
+			paths = append(paths, u.Path())
 		}
-		g.sendFromInput(b.String())
+		g.sendPaths(paths)
 	})
 
 	// Global Ctrl+V: paste a file:// path (or bare path) from the clipboard and
@@ -93,6 +93,7 @@ type gui struct {
 	peers    []string // device names, in dropdown order
 	staged   []string // last batch's files, kept for Retry on failure
 	pairing  bool     // true while a pairing dialog owns a pair-show request
+	sending  bool     // a send is in flight; serializes the send entry points
 	stopCh   chan struct{}
 	stopOnce sync.Once
 }
@@ -180,54 +181,59 @@ func (g *gui) refreshState() {
 // refreshPeers re-queries CmdDevices + CmdStatus and repopulates the dropdown,
 // defaulting the selection to the last-used peer.
 func (g *gui) refreshPeers() {
-	var names []string
-	derr := roundtrip(ipc.Request{Cmd: ipc.CmdDevices}, func(r ipc.Response) {
-		for _, d := range r.Devices {
-			names = append(names, d.Name)
+	// The IPC round-trips block, so run them off the UI thread. This is also
+	// reached from lifecycle callbacks that fire on the main thread, where a
+	// hung daemon would otherwise freeze the window.
+	go func() {
+		var names []string
+		derr := roundtrip(ipc.Request{Cmd: ipc.CmdDevices}, func(r ipc.Response) {
+			for _, d := range r.Devices {
+				names = append(names, d.Name)
+			}
+		})
+		if derr != nil {
+			g.showDaemonDown(derr)
+			return
 		}
-	})
-	if derr != nil {
-		g.showDaemonDown(derr)
-		return
-	}
-	g.clearDaemonDown()
+		g.clearDaemonDown()
 
-	last := ""
-	_ = roundtrip(ipc.Request{Cmd: ipc.CmdStatus}, func(r ipc.Response) {
-		if r.Status != nil {
-			last = r.Status.LastPeer
-		}
-	})
+		last := ""
+		_ = roundtrip(ipc.Request{Cmd: ipc.CmdStatus}, func(r ipc.Response) {
+			if r.Status != nil {
+				last = r.Status.LastPeer
+			}
+		})
 
-	fyne.Do(func() {
-		g.mu.Lock()
-		g.peers = names
-		g.mu.Unlock()
+		fyne.Do(func() {
+			g.mu.Lock()
+			g.peers = names
+			g.mu.Unlock()
 
-		g.peerSelect.Options = names
-		if len(names) == 0 {
-			g.peerSelect.PlaceHolder = "(no devices)"
-			g.peerSelect.ClearSelected()
-			g.setSendEnabled(false)
-			g.statusLbl.SetText("No paired devices yet.")
-			g.pairBtn.Show()
-			if g.pairingActive() {
-				g.pairBtn.Disable()
+			g.peerSelect.Options = names
+			if len(names) == 0 {
+				g.peerSelect.PlaceHolder = "(no devices)"
+				g.peerSelect.ClearSelected()
+				g.setSendEnabled(false)
+				g.statusLbl.SetText("No paired devices yet.")
+				g.pairBtn.Show()
+				if g.pairingActive() {
+					g.pairBtn.Disable()
+				} else {
+					g.pairBtn.Enable()
+				}
 			} else {
-				g.pairBtn.Enable()
+				g.setSendEnabled(true)
+				g.statusLbl.SetText("")
+				g.pairBtn.Hide()
+				sel := last
+				if sel == "" || !contains(names, sel) {
+					sel = names[0]
+				}
+				g.peerSelect.SetSelected(sel)
 			}
-		} else {
-			g.setSendEnabled(true)
-			g.statusLbl.SetText("")
-			g.pairBtn.Hide()
-			sel := last
-			if sel == "" || !contains(names, sel) {
-				sel = names[0]
-			}
-			g.peerSelect.SetSelected(sel)
-		}
-		g.peerSelect.Refresh()
-	})
+			g.peerSelect.Refresh()
+		})
+	}()
 }
 
 // ----- pairing / first-run onboarding -----
@@ -476,9 +482,27 @@ func (g *gui) showFiles(paths []string) {
 	})
 }
 
-// sendFromInput decodes input (drop or paste) into file paths and sends them in
-// one session to the current peer. On any decode/stat failure it shows the bad
-// URIs and does not send. On send failure it stages the files for Retry.
+// beginSend claims the single-send slot. It returns false (and shows a brief
+// inline notice) if a send is already in flight, so the caller should bail out
+// without starting a second one. On success it marks a send as in flight; the
+// matching clear happens in runSend's final fyne.Do block.
+func (g *gui) beginSend() bool {
+	g.mu.Lock()
+	busy := g.sending
+	if !busy {
+		g.sending = true
+	}
+	g.mu.Unlock()
+	if busy {
+		fyne.Do(func() { g.outLabel.SetText("⚠ a send is in progress") })
+		return false
+	}
+	return true
+}
+
+// sendFromInput decodes input (paste) into file paths and sends them in one
+// session to the current peer. On any decode/stat failure it shows the bad URIs
+// and does not send. Splitting is newline-only so pasted paths with spaces work.
 func (g *gui) sendFromInput(input string) {
 	paths, err := decodeFileURIs(input)
 	if err != nil {
@@ -487,12 +511,22 @@ func (g *gui) sendFromInput(input string) {
 			return
 		}
 	}
+	g.sendPaths(paths)
+}
+
+// sendPaths stages already-resolved file paths and sends them to the current
+// peer. It is the shared tail for both drop and paste: pick a peer, guard
+// against a concurrent send, stage for Retry, list the batch, and fire runSend.
+func (g *gui) sendPaths(paths []string) {
 	if len(paths) == 0 {
 		return
 	}
 	peer := g.currentPeer()
 	if peer == "" {
 		fyne.Do(func() { g.outLabel.SetText("⚠ pick a peer first") })
+		return
+	}
+	if !g.beginSend() {
 		return
 	}
 	g.mu.Lock()
@@ -511,6 +545,9 @@ func (g *gui) retry() {
 	if len(paths) == 0 || peer == "" {
 		return
 	}
+	if !g.beginSend() {
+		return
+	}
 	fyne.Do(func() { g.retryBtn.Hide() })
 	g.showFiles(paths)
 	go g.runSend(sendFilesRequest(peer, paths), paths)
@@ -520,6 +557,9 @@ func (g *gui) sendClipboard() {
 	peer := g.currentPeer()
 	if peer == "" {
 		fyne.Do(func() { g.outLabel.SetText("⚠ pick a peer first") })
+		return
+	}
+	if !g.beginSend() {
 		return
 	}
 	g.showFiles(nil) // clipboard isn't a file batch
@@ -555,13 +595,17 @@ func (g *gui) runSend(req ipc.Request, staged []string) {
 			if len(staged) > 0 {
 				g.retryBtn.Show() // keep staged files for a retry
 			}
+			g.mu.Lock()
+			g.sending = false // release the slot for a retry
+			g.mu.Unlock()
 			return
 		}
 		g.outBar.SetValue(1)
 		g.outLabel.SetText("↑ done")
 		g.fileList.Hide() // batch complete; clear the list
 		g.mu.Lock()
-		g.staged = nil // success: clear staging
+		g.staged = nil    // success: clear staging
+		g.sending = false // release the slot
 		g.mu.Unlock()
 	})
 }
