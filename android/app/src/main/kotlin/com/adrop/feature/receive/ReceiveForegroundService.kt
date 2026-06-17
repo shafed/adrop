@@ -26,6 +26,7 @@ import android.os.Build
 import android.os.IBinder
 import android.provider.MediaStore
 import android.util.Log
+import android.webkit.MimeTypeMap
 import androidx.core.app.NotificationCompat
 import com.adrop.AdropApplication
 import com.adrop.R
@@ -318,11 +319,9 @@ class ReceiveForegroundService : Service() {
             }
         }
 
-        val openIntent = Intent(this, MainActivity::class.java)
-        val pi = PendingIntent.getActivity(
-            this, 0, openIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
+        // Tapping the notification opens the file directly when a single file
+        // arrived; otherwise it just opens the app.
+        val pi = contentIntentFor(result)
 
         val notification = NotificationCompat.Builder(this, AdropApplication.CHANNEL_TRANSFERS)
             .setSmallIcon(R.drawable.ic_notification)
@@ -333,6 +332,40 @@ class ReceiveForegroundService : Service() {
             .build()
 
         nm.notify(System.currentTimeMillis().toInt(), notification)
+    }
+
+    /**
+     * Builds the notification tap intent. A single received file opens via
+     * ACTION_VIEW on its MediaStore URI (with read permission granted to the
+     * handling app); anything else falls back to launching MainActivity.
+     */
+    private fun contentIntentFor(result: SessionResult): PendingIntent {
+        val single = (result as? SessionResult.Files)
+            ?.files
+            ?.singleOrNull()
+            ?.takeIf { it.mediaStoreUri != null }
+
+        if (single != null) {
+            val ext = single.name.substringAfterLast('.', "").lowercase()
+            val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
+                ?: "application/octet-stream"
+            val view = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(single.mediaStoreUri, mime)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            // Only use it if some app can handle it; otherwise fall through.
+            if (view.resolveActivity(packageManager) != null) {
+                return PendingIntent.getActivity(
+                    this, single.mediaStoreUri.hashCode(), view,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                )
+            }
+        }
+
+        return PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
     }
 
     private fun buildServiceNotification(remainingSec: Int): Notification {
