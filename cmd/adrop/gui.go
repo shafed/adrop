@@ -17,6 +17,7 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/shafed/adrop/internal/ipc"
@@ -27,8 +28,9 @@ import (
 // connection feeds the inbound row.
 func runGUI(_ []string) error {
 	a := app.NewWithID("dev.adrop.gui")
+	a.Settings().SetTheme(adropTheme{}) // match the phone's Material 3 teal look
 	w := a.NewWindow("adrop")
-	w.Resize(fyne.NewSize(320, 360))
+	w.Resize(fyne.NewSize(320, 380))
 
 	g := newGUI(a, w)
 	w.SetContent(g.content())
@@ -96,15 +98,19 @@ func (g *gui) content() fyne.CanvasObject {
 	g.peerSelect = widget.NewSelect(nil, func(string) {})
 	g.peerSelect.PlaceHolder = "(no devices)"
 
-	g.dropLabel = widget.NewLabel("Drop files here\n(or press Ctrl+V to send a copied file:// path)")
+	g.dropLabel = widget.NewLabel("Drop files here")
 	g.dropLabel.Alignment = fyne.TextAlignCenter
 
-	g.chooseBtn = widget.NewButton("Choose files…", g.chooseFiles)
-	g.clipBtn = widget.NewButton("Send clipboard", g.sendClipboard)
+	// Icon + pill-style buttons echo the phone's Material 3 actions. The two
+	// primary actions get HighImportance (teal fill); helpers stay plain.
+	g.chooseBtn = widget.NewButtonWithIcon("Choose files…", theme.FolderOpenIcon(), g.chooseFiles)
+	g.chooseBtn.Importance = widget.HighImportance
+	g.clipBtn = widget.NewButtonWithIcon("Send clipboard", theme.ContentPasteIcon(), g.sendClipboard)
+	g.clipBtn.Importance = widget.HighImportance
 
 	g.statusLbl = widget.NewLabel("")
 	g.statusLbl.Wrapping = fyne.TextWrapWord
-	g.startBtn = widget.NewButton("Start daemon", g.startDaemon)
+	g.startBtn = widget.NewButtonWithIcon("Start daemon", theme.MediaPlayIcon(), g.startDaemon)
 	g.startBtn.Hide()
 
 	g.outLabel = widget.NewLabel("")
@@ -115,14 +121,14 @@ func (g *gui) content() fyne.CanvasObject {
 	g.fileList = widget.NewLabel("")
 	g.fileList.Hide()
 
-	g.retryBtn = widget.NewButton("Retry", g.retry)
+	g.retryBtn = widget.NewButtonWithIcon("Retry", theme.ViewRefreshIcon(), g.retry)
 	g.retryBtn.Hide()
 
 	g.inLabel = widget.NewLabel("")
 	g.inBar = widget.NewProgressBar()
 	g.inBar.Hide()
 
-	return container.NewVBox(
+	body := container.NewVBox(
 		widget.NewLabel("Peer:"),
 		g.peerSelect,
 		g.dropLabel,
@@ -138,6 +144,19 @@ func (g *gui) content() fyne.CanvasObject {
 		g.inLabel,
 		g.inBar,
 	)
+	// Pin a flat "adrop" header at the top (like the phone's TopAppBar — plain
+	// text on the surface, no fill), with the padded body filling the rest.
+	return container.NewBorder(topBar(), nil, nil, nil, container.NewPadded(body))
+}
+
+// topBar renders a flat "adrop" header echoing the phone's Material 3
+// TopAppBar: the app name in bold foreground over the surface, no band. Using a
+// bold Label (not a raw canvas.Text) keeps the proper line height so the
+// glyph tops aren't clipped by the row's top edge.
+func topBar() fyne.CanvasObject {
+	title := widget.NewLabelWithStyle("adrop", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	// Double padding gives the header breathing room like the phone's TopAppBar.
+	return container.NewPadded(container.NewPadded(title))
 }
 
 // ----- state / peer list -----
