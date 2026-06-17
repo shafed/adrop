@@ -190,6 +190,11 @@ func runClip(args []string) error {
 // progress updates (lines ending in "%") in place on a single terminal line.
 func printLines(r ipc.Response) {
 	defaultProgressPrinter.print(r)
+	// On the final response, flush any held inline progress line with a newline
+	// so the shell prompt doesn't land on top of it.
+	if r.Done {
+		defaultProgressPrinter.finish()
+	}
 }
 
 var defaultProgressPrinter = &progressPrinter{out: os.Stdout}
@@ -225,6 +230,15 @@ func (p *progressPrinter) print(r ipc.Response) {
 		p.lastLen = 0
 	}
 	fmt.Fprintln(p.out, r.Line)
+}
+
+// finish terminates a held inline progress line with a newline, if any.
+func (p *progressPrinter) finish() {
+	if p.inline {
+		fmt.Fprintln(p.out)
+		p.inline = false
+		p.lastLen = 0
+	}
 }
 
 // isProgressLine reports whether line is a transient per-file progress update

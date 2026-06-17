@@ -169,9 +169,17 @@ class ReceiveForegroundService : Service() {
                 if (remainingSeconds <= 0 && activeTransfers.get() == 0) break
                 try {
                     val client = ss.accept() as SSLSocket
+                    // Count the connection as active immediately — before the TLS
+                    // handshake — so a connection accepted just before the deadline
+                    // can't be torn down in the gap before handleClient marks it.
+                    activeTransfers.incrementAndGet()
                     // Handle each connection in a child coroutine so we can accept the next.
                     launch {
-                        handleClient(client, trustRepo, identity)
+                        try {
+                            handleClient(client, trustRepo, identity)
+                        } finally {
+                            activeTransfers.decrementAndGet()
+                        }
                     }
                 } catch (e: SocketException) {
                     if (!isActive) break    // normal shutdown
@@ -181,8 +189,8 @@ class ReceiveForegroundService : Service() {
                 }
             }
         }
-        // Let any transfer that is still finishing complete before tearing down.
-        coroutineContext[Job]?.children?.forEach { it.join() }
+        // withContext suspends until the child handler coroutines finish, so any
+        // transfer still in flight here runs to completion before teardown.
         Log.i(TAG, "receive window closed")
     }
 
@@ -223,21 +231,16 @@ class ReceiveForegroundService : Service() {
                     addr        = "${localLanIp()}:$LISTEN_PORT",
                 ))
 
-                // Receive session. Mark a transfer as active so the receive
-                // window won't expire while bytes are still arriving.
-                activeTransfers.incrementAndGet()
-                try {
-                    val result = receiveSession(
-                        context    = applicationContext,
-                        inp        = inp,
-                        out        = out,
-                        peerName   = trusted.name,
-                        onClipboard = { bytes, mime -> handleClipboard(bytes, mime, trusted.name) }
-                    )
-                    notifyResult(result)
-                } finally {
-                    activeTransfers.decrementAndGet()
-                }
+                // Receive session. The transfer is already counted as active by
+                // the accept loop, so the receive window won't expire mid-transfer.
+                val result = receiveSession(
+                    context    = applicationContext,
+                    inp        = inp,
+                    out        = out,
+                    peerName   = trusted.name,
+                    onClipboard = { bytes, mime -> handleClipboard(bytes, mime, trusted.name) }
+                )
+                notifyResult(result)
 
             } catch (e: Exception) {
                 Log.e(TAG, "client handler error: ${e.message}")
