@@ -54,15 +54,17 @@ class ReceiveForegroundService : Service() {
     // close while this is > 0, so an in-flight transfer is never cut off.
     private val activeTransfers = AtomicInteger(0)
 
-    // Whether at least one transfer has been accepted during this window. Once a
-    // transfer has run, the window closes as soon as none remain active (instead
-    // of waiting out the idle grace period).
-    private var sawTransfer = false
+    // Whether at least one transfer has COMPLETED SUCCESSFULLY during this
+    // window. Once that happens the window closes as soon as none remain active
+    // (instead of waiting out the idle grace period). A transfer that aborts
+    // mid-way does NOT set this, so the window stays open for the rest of the
+    // grace period to let the sender reconnect and resume.
+    @Volatile private var completedTransfer = false
 
     // Wall-clock deadline (ms) for the idle grace period: if no transfer has
-    // arrived by then, the window closes on its own. Refreshed each time we
-    // start waiting again with nothing active.
-    private var graceDeadlineMs = 0L
+    // arrived (or an aborted one hasn't reconnected) by then, the window closes.
+    // Written from handler coroutines on abort, read by the accept loop.
+    @Volatile private var graceDeadlineMs = 0L
 
     // ---------------------------------------------------------------------------
     // Lifecycle
@@ -88,7 +90,7 @@ class ReceiveForegroundService : Service() {
     // ---------------------------------------------------------------------------
 
     private fun startWindow() {
-        sawTransfer = false
+        completedTransfer = false
         graceDeadlineMs = System.currentTimeMillis() + GRACE_SEC * 1_000L
         startForeground(NOTIFICATION_ID_SERVICE, buildServiceNotification())
         ReceiveWindowState.onStarted()
@@ -161,15 +163,16 @@ class ReceiveForegroundService : Service() {
                     // handshake — so a connection accepted right at the deadline
                     // can't be torn down in the gap before handleClient marks it.
                     activeTransfers.incrementAndGet()
-                    sawTransfer = true
                     updateServiceNotification()
                     // Handle each connection in a child coroutine so we can accept the next.
                     launch {
                         try {
                             handleClient(client, trustRepo, identity)
                         } finally {
-                            // Last active transfer just finished: refresh the
-                            // notification so the next poll closes the window.
+                            // Transfer ended (cleanly or aborted): refresh the
+                            // notification. The next poll closes the window if it
+                            // succeeded, or keeps it open for the grace period to
+                            // allow a resume reconnect.
                             activeTransfers.decrementAndGet()
                             updateServiceNotification()
                         }
@@ -189,11 +192,12 @@ class ReceiveForegroundService : Service() {
 
     /**
      * Whether the receive window should close now (only consulted when no
-     * transfer is active). Closes immediately once a transfer has completed;
-     * otherwise waits out the idle grace period for a transfer to arrive.
+     * transfer is active). Closes immediately once a transfer has completed
+     * successfully; otherwise — including after an aborted transfer — waits out
+     * the idle grace period so the sender can reconnect and resume.
      */
     private fun shouldClose(): Boolean =
-        sawTransfer || System.currentTimeMillis() >= graceDeadlineMs
+        completedTransfer || System.currentTimeMillis() >= graceDeadlineMs
 
     private suspend fun handleClient(
         socket: SSLSocket,
@@ -241,10 +245,18 @@ class ReceiveForegroundService : Service() {
                     peerName   = trusted.name,
                     onClipboard = { bytes, mime -> handleClipboard(bytes, mime, trusted.name) }
                 )
+                // Reached only on a clean session: mark success so the window
+                // can close promptly. An aborted transfer throws above and skips
+                // this, leaving the grace period to allow a resume reconnect.
+                completedTransfer = true
                 notifyResult(result)
 
             } catch (e: Exception) {
                 Log.e(TAG, "client handler error: ${e.message}")
+                // Transfer aborted (e.g. sender cancelled or network dropped).
+                // Extend the grace period from now so the window stays open long
+                // enough for the sender to reconnect and resume.
+                graceDeadlineMs = System.currentTimeMillis() + GRACE_SEC * 1_000L
             }
         }
     }
