@@ -45,10 +45,11 @@ type Device struct {
 type Store struct {
 	dir string
 
-	mu      sync.RWMutex
-	cert    tls.Certificate
-	certDER []byte
-	devices []Device
+	mu       sync.RWMutex
+	cert     tls.Certificate
+	certDER  []byte
+	devices  []Device
+	lastPeer string // fingerprint of the most-recently-used send target
 }
 
 // Dir returns the config directory, honoring XDG_CONFIG_HOME.
@@ -188,6 +189,14 @@ func CertDERFromPEM(pemBytes []byte) ([]byte, error) {
 	}
 }
 
+// devicesFile is the on-disk envelope for devices.json.
+// The Devices field was previously written as a bare JSON array; we detect
+// that legacy format and migrate transparently on first write.
+type devicesFile struct {
+	Devices  []Device `json:"devices"`
+	LastPeer string   `json:"last_peer,omitempty"` // fingerprint of last-used send target
+}
+
 func (s *Store) loadDevices() error {
 	data, err := os.ReadFile(s.devicesPath())
 	if os.IsNotExist(err) {
@@ -197,11 +206,32 @@ func (s *Store) loadDevices() error {
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal(data, &s.devices)
+	// Detect legacy bare-array format (starts with '[').
+	trimmed := []byte{}
+	for _, b := range data {
+		if b == ' ' || b == '\t' || b == '\r' || b == '\n' {
+			continue
+		}
+		trimmed = append(trimmed, b)
+		break
+	}
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		return json.Unmarshal(data, &s.devices)
+	}
+	var f devicesFile
+	if err := json.Unmarshal(data, &f); err != nil {
+		return err
+	}
+	s.devices = f.Devices
+	s.lastPeer = f.LastPeer
+	return nil
 }
 
 func (s *Store) saveDevicesLocked() error {
-	data, err := json.MarshalIndent(s.devices, "", "  ")
+	data, err := json.MarshalIndent(devicesFile{
+		Devices:  s.devices,
+		LastPeer: s.lastPeer,
+	}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -309,6 +339,26 @@ func (s *Store) Lookup(nameOrFp string) (Device, bool) {
 		}
 	}
 	return Device{}, false
+}
+
+// LastPeer returns the fingerprint of the most-recently-used send target,
+// or "" if none has been recorded yet.
+func (s *Store) LastPeer() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lastPeer
+}
+
+// SetLastPeer records fingerprint as the most-recently-used send target and
+// persists the change to disk.
+func (s *Store) SetLastPeer(fingerprint string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lastPeer == fingerprint {
+		return
+	}
+	s.lastPeer = fingerprint
+	_ = s.saveDevicesLocked()
 }
 
 func hasPrefix(s, p string) bool {

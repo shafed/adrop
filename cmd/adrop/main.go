@@ -1,13 +1,13 @@
 // Command adrop is both the resident daemon and the thin CLI client.
 //
-//	adrop daemon                 run the resident daemon (systemd user service)
-//	adrop status                 show daemon status
-//	adrop pair show              display this device's pairing QR
-//	adrop pair add <uri>         trust a scanned pairing URI
-//	adrop devices                list trusted devices
-//	adrop revoke <name|fp>       remove a trusted device
-//	adrop send <peer> <files...> send files to a peer
-//	adrop clip <peer> [text]     push clipboard (or text) to a peer
+//	adrop daemon                      run the resident daemon (systemd user service)
+//	adrop status                      show daemon status
+//	adrop pair show                   display this device's pairing QR
+//	adrop pair add <uri>              trust a scanned pairing URI
+//	adrop devices                     list trusted devices
+//	adrop revoke <name|fp>            remove a trusted device
+//	adrop send [<peer>] <files...>    send files (peer optional, uses last-used)
+//	adrop clip [<peer>] [text]        push clipboard (peer optional, uses last-used)
 //
 // The CLI talks to the daemon over a Unix-domain socket; only `daemon` runs
 // the long-lived process.
@@ -66,8 +66,8 @@ Usage:
   adrop pair add <uri>          trust a scanned "adrop://pair?d=..." URI
   adrop devices                 list trusted devices
   adrop revoke <name|fp-prefix> revoke (untrust) a device
-  adrop send <peer> <file...>   send one or more files to a peer (one session)
-  adrop clip <peer> [text]      push clipboard (or given text) to a peer
+  adrop send [<peer>] <file...>  send files to a peer (peer optional after first send)
+  adrop clip [<peer>] [text]    push clipboard to a peer (peer optional after first send)
 
 Environment:
   ADROP_CONFIG_DIR   override config dir (keys, devices)
