@@ -33,6 +33,13 @@ type fileProgressFn func(fileIndex int, bytesDone, totalBytes int64)
 // If the initial dial fails and the target has a known FCM token and a relay
 // address is configured, dialPeer sends a wake request to the relay (asking
 // the phone to open its receive window) and retries once after a short wait.
+// Wake retry tuning: after sending an FCM wake, poll the peer this often for up
+// to this long, connecting as soon as the phone opens its receive window.
+const (
+	wakePollInterval = 500 * time.Millisecond
+	wakeTimeout      = 15 * time.Second
+)
+
 func (d *Daemon) dialPeer(target string) (*tls.Conn, config.Device, error) {
 	dev, ok := d.store.Lookup(target)
 	if !ok {
@@ -46,9 +53,24 @@ func (d *Daemon) dialPeer(target string) (*tls.Conn, config.Device, error) {
 			if wakeErr := d.wakeViRelay(dev); wakeErr != nil {
 				d.logger.Printf("FCM wake failed: %v", wakeErr)
 			} else {
-				d.logger.Printf("FCM wake sent; waiting 10s for phone to open receive window…")
-				time.Sleep(10 * time.Second)
-				conn, fp, err = transport.Dial(dev.Addr, d.store.Certificate(), d)
+				// Poll for the phone to open its receive window instead of
+				// blindly sleeping: retry the dial every wakePollInterval until
+				// it succeeds or wakeTimeout elapses. This connects within a
+				// second or two of the push arriving rather than always waiting
+				// the full timeout.
+				d.logger.Printf("FCM wake sent; waiting up to %s for phone to open receive window…", wakeTimeout)
+				deadline := time.Now().Add(wakeTimeout)
+				for {
+					time.Sleep(wakePollInterval)
+					conn, fp, err = transport.Dial(dev.Addr, d.store.Certificate(), d)
+					if err == nil {
+						d.logger.Printf("phone %s woke up; connected", dev.Name)
+						break
+					}
+					if time.Now().After(deadline) {
+						break
+					}
+				}
 			}
 		}
 		if err != nil {
