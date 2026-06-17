@@ -186,9 +186,59 @@ func runClip(args []string) error {
 	return roundtrip(req, printLines)
 }
 
-// printLines prints any Line fields in streamed responses.
+// printLines prints any Line fields in streamed responses, rendering transient
+// progress updates (lines ending in "%") in place on a single terminal line.
 func printLines(r ipc.Response) {
-	if r.Line != "" {
-		fmt.Println(r.Line)
+	defaultProgressPrinter.print(r)
+}
+
+var defaultProgressPrinter = &progressPrinter{out: os.Stdout}
+
+// progressPrinter renders streamed Line responses, overwriting percentage
+// progress lines on a single terminal line instead of scrolling the terminal.
+type progressPrinter struct {
+	out     *os.File
+	inline  bool // a progress line is currently held on the terminal line
+	lastLen int  // visible length of the held progress line, for clearing
+}
+
+func (p *progressPrinter) print(r ipc.Response) {
+	if r.Line == "" {
+		return
 	}
+	if isProgressLine(r.Line) && isTerminal(p.out) {
+		// Overwrite the current line: carriage return, content, then pad with
+		// spaces to erase any leftover from a previously longer line.
+		pad := ""
+		if n := p.lastLen - len(r.Line); n > 0 {
+			pad = strings.Repeat(" ", n)
+		}
+		fmt.Fprintf(p.out, "\r%s%s", r.Line, pad)
+		p.inline = true
+		p.lastLen = len(r.Line)
+		return
+	}
+	// A non-progress line finalizes any held progress line first.
+	if p.inline {
+		fmt.Fprintln(p.out)
+		p.inline = false
+		p.lastLen = 0
+	}
+	fmt.Fprintln(p.out, r.Line)
+}
+
+// isProgressLine reports whether line is a transient per-file progress update
+// (e.g. "photo.jpg: 42%") that should overwrite in place.
+func isProgressLine(line string) bool {
+	return strings.HasSuffix(line, "%")
+}
+
+// isTerminal reports whether f is an interactive terminal (so we can use
+// carriage-return overwriting); otherwise progress lines scroll normally.
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
 }
