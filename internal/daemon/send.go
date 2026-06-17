@@ -7,8 +7,10 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/shafed/adrop/internal/config"
 	"github.com/shafed/adrop/internal/proto"
@@ -57,7 +59,7 @@ func (d *Daemon) dialPeer(target string) (*tls.Conn, config.Device, error) {
 // SendFiles transfers files to target as a single session. Each file's
 // SHA-256 is computed and sent in the manifest for receiver verification.
 func (d *Daemon) SendFiles(ctx context.Context, target string, paths []string, progress progressFn) error {
-	manifest, err := buildManifest(paths)
+	manifest, fsPaths, err := buildManifest(paths)
 	if err != nil {
 		return err
 	}
@@ -68,9 +70,10 @@ func (d *Daemon) SendFiles(ctx context.Context, target string, paths []string, p
 	defer conn.Close()
 
 	if err := proto.WriteControl(conn, proto.Header{
-		Type:  proto.TypeSessionStart,
-		Kind:  proto.KindFiles,
-		Files: manifest,
+		Type:   proto.TypeSessionStart,
+		Kind:   proto.KindFiles,
+		Files:  manifest,
+		Resume: true,
 	}); err != nil {
 		return err
 	}
@@ -98,7 +101,24 @@ func (d *Daemon) SendFiles(ctx context.Context, target string, paths []string, p
 		if progress != nil {
 			progress(fmt.Sprintf("sending %s (%d/%d)…", m.Name, i+1, len(manifest)))
 		}
-		if err := d.sendOneFile(conn, i, paths[i], m, fileProgress); err != nil {
+		// Resume query: ask receiver how many bytes of this file it already has.
+		if err := proto.WriteControl(conn, proto.Header{
+			Type:      proto.TypeResumeQuery,
+			FileIndex: i,
+			SHA256:    m.SHA256,
+		}); err != nil {
+			return fmt.Errorf("send resume query for %s: %w", m.Name, err)
+		}
+		offer, err := proto.ReadHeader(conn)
+		if err != nil {
+			return fmt.Errorf("read resume offer for %s: %w", m.Name, err)
+		}
+		if offer.Type != proto.TypeResumeOffer {
+			return fmt.Errorf("expected resume_offer for %s, got %s", m.Name, offer.Type)
+		}
+		resumeOffset := offer.BytesDone
+
+		if err := d.sendOneFile(conn, i, fsPaths[i], m, resumeOffset, fileProgress); err != nil {
 			return fmt.Errorf("send %s: %w", m.Name, err)
 		}
 		ack, err := proto.ReadHeader(conn)
@@ -116,24 +136,33 @@ func (d *Daemon) SendFiles(ctx context.Context, target string, paths []string, p
 	if _, err := proto.ReadHeader(conn); err != nil { // final session ack
 		return err
 	}
+	d.store.SetLastPeer(dev.Fingerprint)
 	if progress != nil {
 		progress(fmt.Sprintf("sent %d file(s) to %s", len(manifest), dev.Name))
 	}
 	return nil
 }
 
-func (d *Daemon) sendOneFile(conn *tls.Conn, index int, path string, m proto.FileMeta, fp fileProgressFn) error {
+func (d *Daemon) sendOneFile(conn *tls.Conn, index int, path string, m proto.FileMeta, resumeOffset int64, fp fileProgressFn) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
+	if resumeOffset > 0 && resumeOffset < m.Size {
+		if _, err := f.Seek(resumeOffset, io.SeekStart); err != nil {
+			return fmt.Errorf("seek to resume offset %d: %w", resumeOffset, err)
+		}
+	} else {
+		resumeOffset = 0
+	}
+
 	if err := proto.WriteControl(conn, proto.Header{Type: proto.TypeFileHeader, FileIndex: index}); err != nil {
 		return err
 	}
 	buf := make([]byte, proto.ChunkSize)
-	var bytesSent int64
+	bytesSent := resumeOffset
 	for {
 		n, rerr := f.Read(buf)
 		if n > 0 {
@@ -186,35 +215,83 @@ func (d *Daemon) SendClipboard(ctx context.Context, target string, data []byte, 
 	if !ack.OK {
 		return fmt.Errorf("peer rejected clipboard: %s", ack.Error)
 	}
-	_ = dev
+	d.store.SetLastPeer(dev.Fingerprint)
 	return nil
 }
 
 // buildManifest stats and hashes each path, producing the session manifest.
-func buildManifest(paths []string) ([]proto.FileMeta, error) {
+// Directories are walked recursively; each file gets a RelPath relative to
+// the directory's parent so the receiver can reconstruct the tree.
+// Returns (manifest, fsPaths, error) where fsPaths[i] is the actual file path
+// on disk for manifest[i].
+func buildManifest(paths []string) ([]proto.FileMeta, []string, error) {
 	if len(paths) == 0 {
-		return nil, fmt.Errorf("no files to send")
+		return nil, nil, fmt.Errorf("no files to send")
 	}
-	out := make([]proto.FileMeta, 0, len(paths))
+	var metas []proto.FileMeta
+	var fsPaths []string
 	for _, p := range paths {
 		info, err := os.Stat(p)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		if info.IsDir() {
-			return nil, fmt.Errorf("%s is a directory (not supported in MVP)", p)
+		if !info.IsDir() {
+			sum, err := hashFile(p)
+			if err != nil {
+				return nil, nil, err
+			}
+			metas = append(metas, proto.FileMeta{
+				Name:   filepath.Base(p),
+				Size:   info.Size(),
+				SHA256: sum,
+			})
+			fsPaths = append(fsPaths, p)
+			continue
 		}
-		sum, err := hashFile(p)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, proto.FileMeta{
-			Name:   filepath.Base(p),
-			Size:   info.Size(),
-			SHA256: sum,
+		// Directory: walk and collect all regular files with relative paths.
+		// parentDir is the directory containing p, so that the walked files
+		// get rel paths starting with the directory name itself.
+		parentDir := filepath.Dir(p)
+		walkErr := filepath.WalkDir(p, func(entry string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
+			rel, err := filepath.Rel(parentDir, entry)
+			if err != nil {
+				return err
+			}
+			// Reject any path that escapes via "..".
+			if strings.Contains(rel, "..") {
+				return fmt.Errorf("unsafe relative path %q", rel)
+			}
+			fi, err := d.Info()
+			if err != nil {
+				return err
+			}
+			sum, err := hashFile(entry)
+			if err != nil {
+				return err
+			}
+			metas = append(metas, proto.FileMeta{
+				Name:    filepath.Base(entry),
+				Size:    fi.Size(),
+				SHA256:  sum,
+				RelPath: filepath.ToSlash(rel),
+			})
+			fsPaths = append(fsPaths, entry)
+			return nil
 		})
+		if walkErr != nil {
+			return nil, nil, walkErr
+		}
 	}
-	return out, nil
+	if len(metas) == 0 {
+		return nil, nil, fmt.Errorf("no files to send")
+	}
+	return metas, fsPaths, nil
 }
 
 func hashFile(path string) (string, error) {

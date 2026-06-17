@@ -55,6 +55,16 @@ const (
 	// don't recognise the type should skip it; the existing
 	// ignoreUnknownKeys / omitempty guards ensure backward compatibility.
 	TypeProgress Type = "progress"
+
+	// TypeResumeQuery is sent by the sender before TypeFileHeader when the
+	// session was started with Resume=true. The receiver checks for a
+	// pre-existing .adrop-part file and replies with TypeResumeOffer.
+	TypeResumeQuery Type = "resume_query"
+
+	// TypeResumeOffer is sent by the receiver in response to TypeResumeQuery.
+	// BytesDone reports how many bytes of the partial file already exist
+	// (0 if none). The sender seeks to that offset before streaming chunks.
+	TypeResumeOffer Type = "resume_offer"
 )
 
 // SessionKind distinguishes a file-transfer session from a clipboard push.
@@ -67,9 +77,10 @@ const (
 
 // FileMeta describes one file in a session manifest.
 type FileMeta struct {
-	Name   string `json:"name"`   // base name only; no path components
-	Size   int64  `json:"size"`   // bytes
-	SHA256 string `json:"sha256"` // hex digest for integrity check
+	Name    string `json:"name"`              // base name only; no path components
+	Size    int64  `json:"size"`              // bytes
+	SHA256  string `json:"sha256"`            // hex digest for integrity check
+	RelPath string `json:"rel_path,omitempty"` // relative path within a directory transfer
 }
 
 // Header is the JSON envelope prefixing every message.
@@ -87,8 +98,16 @@ type Header struct {
 	Addr string `json:"addr,omitempty"`
 
 	// SessionStart
-	Kind  SessionKind `json:"kind,omitempty"`
-	Files []FileMeta  `json:"files,omitempty"`
+	Kind   SessionKind `json:"kind,omitempty"`
+	Files  []FileMeta  `json:"files,omitempty"`
+	// Resume, when true, signals that the sender will emit a TypeResumeQuery
+	// before each TypeFileHeader. Old receivers that don't set Resume never
+	// see these frames, so the field is safe to add with omitempty.
+	Resume bool        `json:"resume,omitempty"`
+
+	// SHA256 carries the file hash in TypeResumeQuery so the receiver can
+	// detect a partial file from a different original (hash mismatch → restart).
+	SHA256 string `json:"sha256,omitempty"`
 
 	// FileHeader / Chunk / FileEnd reference a file by index into Files.
 	FileIndex int `json:"file_index,omitempty"`

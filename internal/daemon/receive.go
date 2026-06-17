@@ -89,7 +89,7 @@ func (d *Daemon) receiveSession(ctx context.Context, conn *tls.Conn, peerName st
 	case proto.KindClipboard:
 		return d.receiveClipboard(ctx, conn, peerName)
 	case proto.KindFiles:
-		return d.receiveFiles(ctx, conn, peerName, start.Files)
+		return d.receiveFiles(ctx, conn, peerName, start.Files, start.Resume)
 	default:
 		return fmt.Errorf("unknown session kind %q", start.Kind)
 	}
@@ -132,11 +132,11 @@ func (d *Daemon) receiveClipboard(ctx context.Context, conn *tls.Conn, peerName 
 	return nil
 }
 
-func (d *Daemon) receiveFiles(ctx context.Context, conn *tls.Conn, peerName string, manifest []proto.FileMeta) error {
-	return d.receiveFilesWithProgress(ctx, conn, peerName, manifest, nil)
+func (d *Daemon) receiveFiles(ctx context.Context, conn *tls.Conn, peerName string, manifest []proto.FileMeta, resume bool) error {
+	return d.receiveFilesWithProgress(ctx, conn, peerName, manifest, resume, nil)
 }
 
-func (d *Daemon) receiveFilesWithProgress(ctx context.Context, conn *tls.Conn, peerName string, manifest []proto.FileMeta, onProgress progressCallback) error {
+func (d *Daemon) receiveFilesWithProgress(ctx context.Context, conn *tls.Conn, peerName string, manifest []proto.FileMeta, resume bool, onProgress progressCallback) error {
 	if len(manifest) == 0 {
 		return fmt.Errorf("empty file manifest")
 	}
@@ -159,6 +159,21 @@ func (d *Daemon) receiveFilesWithProgress(ctx context.Context, conn *tls.Conn, p
 			}
 			continue
 		}
+		// Resume query: sender asks how many bytes of this file we already have.
+		if hdr.Type == proto.TypeResumeQuery {
+			resumeOffset := int64(0)
+			if resume {
+				resumeOffset = d.partialFileBytes(manifest, hdr.FileIndex, hdr.SHA256)
+			}
+			if err := proto.WriteControl(conn, proto.Header{
+				Type:      proto.TypeResumeOffer,
+				FileIndex: hdr.FileIndex,
+				BytesDone: resumeOffset,
+			}); err != nil {
+				return fmt.Errorf("send resume offer: %w", err)
+			}
+			continue
+		}
 		if hdr.Type != proto.TypeFileHeader {
 			return fmt.Errorf("expected file_header, got %s", hdr.Type)
 		}
@@ -166,7 +181,11 @@ func (d *Daemon) receiveFilesWithProgress(ctx context.Context, conn *tls.Conn, p
 			return fmt.Errorf("file index %d out of range", hdr.FileIndex)
 		}
 		meta := manifest[hdr.FileIndex]
-		path, err := d.receiveOneFile(conn, meta)
+		resumeOffset := int64(0)
+		if resume {
+			resumeOffset = d.partialFileBytes(manifest, hdr.FileIndex, meta.SHA256)
+		}
+		path, err := d.receiveOneFile(conn, meta, resumeOffset)
 		if err != nil {
 			_ = proto.WriteControl(conn, proto.Header{
 				Type: proto.TypeAck, FileIndex: hdr.FileIndex, OK: false, Error: err.Error(),
@@ -187,20 +206,77 @@ func (d *Daemon) receiveFilesWithProgress(ctx context.Context, conn *tls.Conn, p
 	return nil
 }
 
-// receiveOneFile streams chunks for a single file to a uniquely-named path in
-// the download dir, verifying the SHA-256 from the manifest. On hash mismatch
-// the partial file is removed.
-func (d *Daemon) receiveOneFile(conn *tls.Conn, meta proto.FileMeta) (string, error) {
+// partialFileBytes returns the size of an existing .adrop-part file for the
+// given manifest entry, or 0 if there is no valid partial file.
+// A partial file larger than or equal to the full size is treated as invalid.
+func (d *Daemon) partialFileBytes(manifest []proto.FileMeta, fileIndex int, _ string) int64 {
+	if fileIndex < 0 || fileIndex >= len(manifest) {
+		return 0
+	}
+	meta := manifest[fileIndex]
 	dest := uniquePath(d.downloadDir, sanitizeName(meta.Name))
 	tmp := dest + ".adrop-part"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if err != nil {
-		return "", err
+	info, err := os.Stat(tmp)
+	if err != nil || info.Size() == 0 || info.Size() >= meta.Size {
+		return 0
 	}
-	hasher := sha256.New()
-	w := io.MultiWriter(f, hasher)
+	return info.Size()
+}
 
-	var got int64
+// receiveOneFile streams chunks for a single file to a uniquely-named path in
+// the download dir, verifying the SHA-256 from the manifest. On hash mismatch
+// the partial file is removed. resumeOffset bytes are assumed already written
+// (appended to an existing .adrop-part file).
+func (d *Daemon) receiveOneFile(conn *tls.Conn, meta proto.FileMeta, resumeOffset int64) (string, error) {
+	var dest string
+	if meta.RelPath != "" {
+		// Validate: reject any RelPath component that is "..".
+		clean := filepath.FromSlash(meta.RelPath)
+		for _, part := range strings.Split(clean, string(filepath.Separator)) {
+			if part == ".." {
+				return "", fmt.Errorf("unsafe rel_path %q", meta.RelPath)
+			}
+		}
+		dest = uniquePath(d.downloadDir, clean)
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return "", err
+		}
+	} else {
+		dest = uniquePath(d.downloadDir, sanitizeName(meta.Name))
+	}
+	tmp := dest + ".adrop-part"
+	hasher := sha256.New()
+	var f *os.File
+	var err error
+	got := int64(0)
+	if resumeOffset > 0 {
+		f, err = os.OpenFile(tmp, os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			// Partial file gone — fall through to truncate+create below.
+			resumeOffset = 0
+		} else {
+			// Replay existing bytes into the hasher so the final digest is correct.
+			partial, rerr := os.Open(tmp)
+			if rerr != nil {
+				f.Close()
+				return "", rerr
+			}
+			if _, rerr = io.CopyN(hasher, partial, resumeOffset); rerr != nil {
+				partial.Close()
+				f.Close()
+				return "", fmt.Errorf("replay partial into hasher: %w", rerr)
+			}
+			partial.Close()
+			got = resumeOffset
+		}
+	}
+	if resumeOffset == 0 {
+		f, err = os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		if err != nil {
+			return "", err
+		}
+	}
+	w := io.MultiWriter(f, hasher)
 	cleanup := func() { f.Close(); os.Remove(tmp) }
 	for {
 		hdr, err := proto.ReadHeader(conn)

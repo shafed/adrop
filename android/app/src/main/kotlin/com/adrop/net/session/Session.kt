@@ -233,9 +233,14 @@ private fun receiveOneFile(
 ): ReceivedFile {
     val digest = MessageDigest.getInstance("SHA-256")
 
+    // If the sender set a relative path, use it as the display name so the
+    // user can see the folder structure. MediaStore flattens Downloads into a
+    // single directory, so the path becomes part of the filename.
+    val displayName = if (!meta.relPath.isNullOrEmpty()) meta.relPath.replace('/', '_') else meta.name
+
     // Prepare MediaStore entry in Downloads.
     val values = ContentValues().apply {
-        put(MediaStore.Downloads.DISPLAY_NAME, meta.name)
+        put(MediaStore.Downloads.DISPLAY_NAME, displayName)
         put(MediaStore.Downloads.MIME_TYPE, guessMime(meta.name))
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             put(MediaStore.Downloads.IS_PENDING, 1)
@@ -306,7 +311,7 @@ private fun receiveOneFile(
             val done = ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }
             resolver.update(uri, done, null, null)
         }
-        return ReceivedFile(meta.name, uri)
+        return ReceivedFile(displayName, uri)
     } catch (e: Exception) {
         // Delete the partial entry on any failure.
         resolver.delete(uri, null, null)

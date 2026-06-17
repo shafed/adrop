@@ -69,9 +69,10 @@ object SessionKind {
 
 @Serializable
 data class FileMeta(
-    @SerialName("name")   val name:   String,
-    @SerialName("size")   val size:   Long,
-    @SerialName("sha256") val sha256: String,
+    @SerialName("name")     val name:    String,
+    @SerialName("size")     val size:    Long,
+    @SerialName("sha256")   val sha256:  String,
+    @SerialName("rel_path") val relPath: String? = null,
 )
 
 // ---------------------------------------------------------------------------
