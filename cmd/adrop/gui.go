@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image/color"
 	"net"
@@ -588,6 +589,18 @@ func progressFraction(line string) (float64, bool) {
 
 // ----- receive feed -----
 
+// errSubscribeUnsupported means the daemon rejected CmdSubscribe (e.g. an older
+// daemon that predates the event stream). There's no point reconnecting: the
+// GUI degrades to send-only for the rest of the session.
+var errSubscribeUnsupported = errors.New("subscribe unsupported by daemon")
+
+// minStreamUptime is how long a subscribe connection must stay up before we
+// treat it as a healthy stream and reset the reconnect backoff. Without this,
+// a daemon that accepts the connection but ends the stream immediately (e.g.
+// Done on shutdown) would let the loop reset backoff and re-dial in a tight
+// spin.
+const minStreamUptime = 5 * time.Second
+
 // subscribeLoop holds one long-lived CmdSubscribe connection and renders inbound
 // events. It reconnects with backoff if the connection drops (daemon restart).
 func (g *gui) subscribeLoop() {
@@ -598,24 +611,35 @@ func (g *gui) subscribeLoop() {
 			return
 		default:
 		}
-		if err := g.subscribeOnce(); err != nil {
-			// Couldn't connect or stream dropped — wait and retry.
-			select {
-			case <-g.stopCh:
-				return
-			case <-time.After(backoff):
-			}
-			if backoff < 10*time.Second {
-				backoff *= 2
-			}
+		start := time.Now()
+		err := g.subscribeOnce()
+		if errors.Is(err, errSubscribeUnsupported) {
+			// Daemon doesn't speak the event stream; stop retrying for good.
+			return
+		}
+		// Reset backoff only if the stream actually stayed up for a while; a
+		// near-instant return (error or clean Done) must keep backing off so we
+		// don't spin re-dialing.
+		if err == nil && time.Since(start) >= minStreamUptime {
+			backoff = time.Second
 			continue
 		}
-		backoff = time.Second
+		// Couldn't connect or the stream dropped/ended quickly — wait and retry.
+		select {
+		case <-g.stopCh:
+			return
+		case <-time.After(backoff):
+		}
+		if backoff < 10*time.Second {
+			backoff *= 2
+		}
 	}
 }
 
 // subscribeOnce dials the daemon, sends CmdSubscribe, and renders events until
-// the stream ends or stop is requested.
+// the stream ends or stop is requested. It returns errSubscribeUnsupported if
+// the daemon rejects the command, nil on a clean stream end, or the underlying
+// error otherwise.
 func (g *gui) subscribeOnce() error {
 	conn, err := net.Dial("unix", ipc.SocketPath())
 	if err != nil {
@@ -638,7 +662,7 @@ func (g *gui) subscribeOnce() error {
 		}
 		if resp.Err != "" {
 			// Old daemon: "unknown command". Degrade to send-only silently.
-			return nil
+			return errSubscribeUnsupported
 		}
 		if resp.Event != nil {
 			g.renderEvent(*resp.Event)

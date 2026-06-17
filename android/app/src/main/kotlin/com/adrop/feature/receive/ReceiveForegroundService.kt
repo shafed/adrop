@@ -130,21 +130,22 @@ class ReceiveForegroundService : Service() {
         }
 
         windowJob = scope.launch {
-            var stoppedWithError = false
             try {
                 openReceiveWindow()
+                // Normal close. onStopped() preserves any lastError, but a clean
+                // run has none, so this clears the running/countdown UI.
+                ReceiveWindowState.onStopped()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "receive window error: ${e.message}")
-                stoppedWithError = true
-                surfaceTickerJob?.cancel()
-                surfaceTickerJob = null
+                // Publish the error and leave it set: stopSelf() below triggers
+                // onDestroy() -> onStopped(), which deliberately preserves
+                // lastError so the Home screen can still surface it.
                 ReceiveWindowState.onError(e.message ?: "Receive window error")
             } finally {
                 surfaceTickerJob?.cancel()
                 surfaceTickerJob = null
-                if (!stoppedWithError) ReceiveWindowState.onStopped()
                 stopSelf()
             }
         }
