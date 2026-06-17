@@ -13,6 +13,9 @@ RestartSec=2
 # These are provided by the graphical session's environment (imported via
 # `systemctl --user import-environment` or a display-manager integration).
 Environment=ADROP_PORT=53127
+# Relay base URL for FCM wake: when a direct dial to a phone fails, the daemon
+# POSTs /wake here so the phone opens its receive window, then retries.
+Environment=ADROP_RELAY=http://localhost:8080
 
 [Install]
 WantedBy=graphical-session.target
