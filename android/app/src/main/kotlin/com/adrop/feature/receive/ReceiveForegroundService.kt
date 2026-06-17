@@ -42,6 +42,7 @@ import com.adrop.ui.ReceiveWindowState
 import kotlinx.coroutines.*
 import javax.net.ssl.SSLSocket
 import java.net.SocketException
+import java.util.concurrent.atomic.AtomicInteger
 
 class ReceiveForegroundService : Service() {
 
@@ -50,6 +51,11 @@ class ReceiveForegroundService : Service() {
     private var timerJob: Job? = null
     private var remainingSeconds = DEFAULT_WINDOW_SEC
     private var mdnsManager: MdnsManager? = null
+
+    // Number of transfers currently being received. The receive window will not
+    // close while this is > 0, so an in-flight transfer is never cut off when
+    // the 5-minute window expires.
+    private val activeTransfers = AtomicInteger(0)
 
     // ---------------------------------------------------------------------------
     // Lifecycle
@@ -101,9 +107,16 @@ class ReceiveForegroundService : Service() {
         }
 
         // Countdown timer — updates notification and in-process state every second.
+        // The countdown pauses while a transfer is in progress so the window can
+        // never expire mid-transfer.
         timerJob = scope.launch {
             while (remainingSeconds > 0) {
                 delay(1_000)
+                if (activeTransfers.get() > 0) {
+                    // A transfer is running: hold the clock and show "Receiving…".
+                    updateServiceNotification(remainingSeconds)
+                    continue
+                }
                 remainingSeconds--
                 ReceiveWindowState.onTick(remainingSeconds)
                 // Update notification every 5 s to reduce churn, but always on last 10 s.
@@ -146,11 +159,14 @@ class ReceiveForegroundService : Service() {
         Log.i(TAG, "listening on $listenAddr")
 
         serverSocket.use { ss ->
-            // Time out the accept loop when the window expires.
-            val windowMs = DEFAULT_WINDOW_SEC * 1_000L
-            ss.soTimeout = windowMs.toInt().coerceAtMost(Int.MAX_VALUE)
+            // Poll the accept loop on a short interval so we can re-check the
+            // window deadline frequently. The window only closes once the
+            // countdown has elapsed AND no transfer is in progress, so a
+            // transfer that starts before expiry runs to completion.
+            ss.soTimeout = ACCEPT_POLL_MS
 
             while (isActive) {
+                if (remainingSeconds <= 0 && activeTransfers.get() == 0) break
                 try {
                     val client = ss.accept() as SSLSocket
                     // Handle each connection in a child coroutine so we can accept the next.
@@ -161,11 +177,12 @@ class ReceiveForegroundService : Service() {
                     if (!isActive) break    // normal shutdown
                     Log.w(TAG, "accept error: ${e.message}")
                 } catch (e: java.net.SocketTimeoutException) {
-                    // Window expired.
-                    break
+                    // Poll tick: loop back and re-check the window deadline.
                 }
             }
         }
+        // Let any transfer that is still finishing complete before tearing down.
+        coroutineContext[Job]?.children?.forEach { it.join() }
         Log.i(TAG, "receive window closed")
     }
 
@@ -206,15 +223,21 @@ class ReceiveForegroundService : Service() {
                     addr        = "${localLanIp()}:$LISTEN_PORT",
                 ))
 
-                // Receive session.
-                val result = receiveSession(
-                    context    = applicationContext,
-                    inp        = inp,
-                    out        = out,
-                    peerName   = trusted.name,
-                    onClipboard = { bytes, mime -> handleClipboard(bytes, mime, trusted.name) }
-                )
-                notifyResult(result)
+                // Receive session. Mark a transfer as active so the receive
+                // window won't expire while bytes are still arriving.
+                activeTransfers.incrementAndGet()
+                try {
+                    val result = receiveSession(
+                        context    = applicationContext,
+                        inp        = inp,
+                        out        = out,
+                        peerName   = trusted.name,
+                        onClipboard = { bytes, mime -> handleClipboard(bytes, mime, trusted.name) }
+                    )
+                    notifyResult(result)
+                } finally {
+                    activeTransfers.decrementAndGet()
+                }
 
             } catch (e: Exception) {
                 Log.e(TAG, "client handler error: ${e.message}")
@@ -375,14 +398,20 @@ class ReceiveForegroundService : Service() {
             this, 1, stopIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val min = remainingSec / 60
-        val sec = remainingSec % 60
-        val timeStr = if (min > 0) "${min}m ${sec}s" else "${sec}s"
+        val active = activeTransfers.get()
+        val text = if (active > 0) {
+            if (active == 1) "Receiving a transfer…" else "Receiving $active transfers…"
+        } else {
+            val min = remainingSec / 60
+            val sec = remainingSec % 60
+            val timeStr = if (min > 0) "${min}m ${sec}s" else "${sec}s"
+            "Listening for transfers — $timeStr remaining"
+        }
 
         return NotificationCompat.Builder(this, CHANNEL_SERVICE)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("Receive window open")
-            .setContentText("Listening for transfers — $timeStr remaining")
+            .setContentText(text)
             .setOngoing(true)
             .addAction(android.R.drawable.ic_media_pause, "Stop", stopPi)
             .build()
@@ -404,6 +433,7 @@ class ReceiveForegroundService : Service() {
         const val NOTIFICATION_ID_SERVICE = 100
         const val LISTEN_PORT          = 7777
         const val DEFAULT_WINDOW_SEC   = 300  // 5 minutes
+        const val ACCEPT_POLL_MS       = 1_000 // accept() poll interval
 
         const val ACTION_START = "com.adrop.RECEIVE_START"
         const val ACTION_STOP  = "com.adrop.RECEIVE_STOP"
