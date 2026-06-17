@@ -26,6 +26,20 @@
         (scoped storage) for saving received files to shared Downloads.
     -->
 
+    <!--
+        Package visibility (API 30+): without this, resolveActivity()/the system
+        cannot "see" apps that handle ACTION_VIEW, so tapping a received-file
+        notification would only ever fall back to opening adrop itself. Declaring
+        an ACTION_VIEW query lets us open any received file in its handler app,
+        not just images.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="*/*" />
+        </intent>
+    </queries>
+
     <application
         android:name=".AdropApplication"
         android:allowBackup="false"
