@@ -65,6 +65,40 @@ func TestDecodeFileURIsMultiple(t *testing.T) {
 	}
 }
 
+// TestDecodeFileURIsLiteralSpace proves a path containing a literal (un-escaped)
+// space survives — both as a file:// URI and as a bare path — because splitting
+// is on newlines only, not all whitespace. This is the drop/paste-with-spaces
+// regression: strings.Fields would have shredded "b file.txt" into two tokens.
+func TestDecodeFileURIsLiteralSpace(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.txt")
+	b := filepath.Join(dir, "b file.txt") // literal space, not %20
+	for _, p := range []string{a, b} {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// file:// URI with a literal space alongside a normal one.
+	input := "file://" + a + "\nfile://" + b
+	paths, err := decodeFileURIs(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(paths) != 2 || paths[0] != a || paths[1] != b {
+		t.Errorf("got %v, want [%q %q]", paths, a, b)
+	}
+
+	// Bare path with a literal space (paste of a plain filesystem path).
+	paths, err = decodeFileURIs(b)
+	if err != nil {
+		t.Fatalf("unexpected error for bare path: %v", err)
+	}
+	if len(paths) != 1 || paths[0] != b {
+		t.Errorf("bare path got %v, want [%q]", paths, b)
+	}
+}
+
 func TestDecodeFileURIsReportsBad(t *testing.T) {
 	dir := t.TempDir()
 	good := filepath.Join(dir, "ok.txt")
