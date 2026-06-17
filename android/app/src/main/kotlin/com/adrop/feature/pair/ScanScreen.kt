@@ -43,6 +43,7 @@ import java.util.concurrent.Executors
 @Composable
 fun ScanScreen(
     vm: PairViewModel = viewModel(factory = PairViewModel.factory(LocalContext.current)),
+    initialPairingUri: String? = null,
     onPaired: (deviceName: String) -> Unit,
     onBack: () -> Unit,
 ) {
@@ -50,9 +51,19 @@ fun ScanScreen(
     val cameraPermission = rememberPermissionState(android.Manifest.permission.CAMERA)
     val snackbarHostState = remember { SnackbarHostState() }
 
-    LaunchedEffect(Unit) {
-        vm.startScanning()
-        if (!cameraPermission.status.isGranted) {
+    LaunchedEffect(initialPairingUri) {
+        if (initialPairingUri != null) {
+            vm.onQrScanned(initialPairingUri)
+        } else {
+            vm.startScanning()
+            if (!cameraPermission.status.isGranted) {
+                cameraPermission.launchPermissionRequest()
+            }
+        }
+    }
+
+    LaunchedEffect(cameraPermission.status.isGranted, initialPairingUri) {
+        if (initialPairingUri == null && !cameraPermission.status.isGranted) {
             cameraPermission.launchPermissionRequest()
         }
     }
@@ -105,7 +116,7 @@ fun ScanScreen(
             contentAlignment = Alignment.Center,
         ) {
             when {
-                !cameraPermission.status.isGranted -> {
+                initialPairingUri == null && !cameraPermission.status.isGranted -> {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text("Camera permission is required to scan the pairing QR code.")
                         Spacer(Modifier.height(16.dp))
@@ -134,7 +145,7 @@ fun ScanScreen(
                     }
                 }
 
-                else -> {
+                initialPairingUri == null -> {
                     QrCameraPreview(
                         onBarcodeDetected = { value ->
                             if (value.startsWith("adrop://pair")) {
@@ -143,6 +154,8 @@ fun ScanScreen(
                         }
                     )
                 }
+
+                else -> Unit
             }
         }
     }

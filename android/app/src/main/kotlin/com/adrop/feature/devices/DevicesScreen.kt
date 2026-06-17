@@ -6,6 +6,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -23,6 +24,7 @@ import kotlinx.coroutines.launch
 fun DevicesScreen(
     vm: DevicesViewModel = viewModel(factory = DevicesViewModel.factory(LocalContext.current)),
     onBack: () -> Unit,
+    onNavigatePair: () -> Unit,
 ) {
     val devices by vm.devices.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -47,10 +49,23 @@ fun DevicesScreen(
                     .padding(padding)
                     .padding(24.dp),
             ) {
-                Text(
-                    "No paired devices yet. Use 'Scan QR' to pair with a PC.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
+                Column {
+                    Text(
+                        "No paired devices yet.",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Scan the QR code shown by your PC to pair.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Button(onClick = onNavigatePair) {
+                        Icon(Icons.Default.QrCodeScanner, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Scan QR")
+                    }
+                }
             }
         } else {
             LazyColumn(

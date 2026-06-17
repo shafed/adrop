@@ -32,6 +32,11 @@ enum class ClipboardMimeMode(val mime: String, val label: String) {
     HTML("text/html", "HTML"),
 }
 
+enum class SendPhase {
+    PREPARING,
+    TRANSFERRING,
+}
+
 private const val PREFS_NAME = "adrop_send_prefs"
 private const val KEY_LAST_DEVICE_FP = "last_device_fingerprint"
 
@@ -43,16 +48,16 @@ data class SendUiState(
     val clipboardMime:  ClipboardMimeMode   = ClipboardMimeMode.TEXT,
     val pickedImageUri: Uri?                = null,
     val isSending:      Boolean             = false,
+    val sendPhase:      SendPhase?          = null,
     val result:         SendResult?         = null,
     /**
-     * Human-readable progress message while a file transfer is in flight.
-     * Populated by the ProgressFn callback in Session.kt's sendFiles().
-     * Null when no transfer is active.
+     * Human-readable status while files are being prepared or transferred.
+     * PREPARING is set before manifest hashing, TRANSFERRING is populated by
+     * the ProgressFn callback in Session.kt's sendFiles().
+     * Null when no file send is active.
      *
-     * TODO: replace/augment with per-file byte-level progress once Session.kt
-     * exposes a bytesTransferred callback in addition to the message callback.
-     * See net/session/Session.kt sendFiles() — add a (fileIndex, bytesSent, totalBytes)
-     * overload to ProgressFn there, then surface it here as a 0..1 Float.
+     * TODO: wire Session.kt's fileProgress callback into state, then surface it
+     * here as a 0..1 Float for determinate progress.
      */
     val transferProgress: String?           = null,
 )
@@ -118,14 +123,32 @@ class SendViewModel(
             _state.update { it.copy(result = SendResult.Error("No files selected")) }
             return
         }
-        _state.update { it.copy(isSending = true, result = null, transferProgress = null) }
+        _state.update {
+            it.copy(
+                isSending        = true,
+                sendPhase        = SendPhase.PREPARING,
+                result           = null,
+                transferProgress = "Preparing selected files…",
+            )
+        }
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    doSendFiles(device, uris) { msg ->
-                        // ProgressFn callback — runs on IO dispatcher, safe to update StateFlow.
-                        _state.update { it.copy(transferProgress = msg) }
-                    }
+                    doSendFiles(
+                        device      = device,
+                        uris        = uris,
+                        onPreparing = { msg ->
+                            _state.update {
+                                it.copy(sendPhase = SendPhase.PREPARING, transferProgress = msg)
+                            }
+                        },
+                        progress    = { msg ->
+                            // ProgressFn callback — runs on IO dispatcher, safe to update StateFlow.
+                            _state.update {
+                                it.copy(sendPhase = SendPhase.TRANSFERRING, transferProgress = msg)
+                            }
+                        },
+                    )
                 }
             }
             if (result.isSuccess) {
@@ -134,6 +157,7 @@ class SendViewModel(
             _state.update {
                 it.copy(
                     isSending        = false,
+                    sendPhase        = null,
                     transferProgress = null,
                     result = if (result.isSuccess) SendResult.Success
                              else SendResult.Error(result.exceptionOrNull()?.message ?: "Unknown error")
@@ -171,7 +195,7 @@ class SendViewModel(
             }
         }
 
-        _state.update { it.copy(isSending = true, result = null) }
+        _state.update { it.copy(isSending = true, sendPhase = null, transferProgress = null, result = null) }
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching { doSendClipboardBytes(device, bytes, mime.mime) }
@@ -197,24 +221,33 @@ class SendViewModel(
     // I/O workers
     // ---------------------------------------------------------------------------
 
-    private suspend fun doSendFiles(device: TrustedDevice, uris: List<Uri>, progress: ProgressFn? = null) {
+    private suspend fun doSendFiles(
+        device: TrustedDevice,
+        uris: List<Uri>,
+        onPreparing: ProgressFn? = null,
+        progress: ProgressFn? = null,
+    ) {
         val identity = IdentityStore.getOrCreate(context)
         val devices  = trustRepo.getAll()
         val trustMgr = PinningTrustManager(isTrusted = { fp -> devices.find { it.fingerprint == fp } })
 
         val resolver = context.contentResolver
 
+        onPreparing?.invoke("Reading file details…")
+
         // Resolve names and sizes from content URIs.
         val names = uris.map { uri -> queryFileName(uri) }
         val sizes = uris.map { uri -> queryFileSize(uri) }
 
         // Build manifest by hashing files.
+        onPreparing?.invoke("Hashing selected files…")
         val manifest = buildManifest(
             names    = names,
             sizes    = sizes,
             openFile = { i -> resolver.openInputStream(uris[i])!! },
         )
 
+        onPreparing?.invoke("Connecting to ${device.name}…")
         val socket = dial(device.addr, identity, trustMgr)
         socket.use { s ->
             val out = s.outputStream.buffered()

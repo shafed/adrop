@@ -73,14 +73,14 @@ func Decode(uri string) (Payload, error) {
 // with a dark-on-light or light-on-dark scheme. It uses half-block characters
 // so the code stays roughly square in typical fonts.
 func RenderTerminal(uri string) (string, error) {
-	code, err := qr.Encode(uri, qr.M)
+	code, err := qr.Encode(uri, qr.L)
 	if err != nil {
 		return "", err
 	}
 	size := code.Size
 	var b strings.Builder
 	// Quiet zone + two rows per text line using upper/lower half blocks.
-	const quiet = 2
+	const quiet = 1
 	dim := size + quiet*2
 	at := func(x, y int) bool {
 		if x < quiet || y < quiet || x >= size+quiet || y >= size+quiet {
@@ -110,7 +110,7 @@ func RenderTerminal(uri string) (string, error) {
 
 // RenderPNG returns PNG bytes for the URI (used by a GUI/window renderer).
 func RenderPNG(uri string) ([]byte, error) {
-	code, err := qr.Encode(uri, qr.M)
+	code, err := qr.Encode(uri, qr.L)
 	if err != nil {
 		return nil, err
 	}

@@ -8,6 +8,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -18,15 +23,17 @@ import com.adrop.ui.screens.HomeScreen
 import com.adrop.ui.theme.AdropTheme
 
 class MainActivity : ComponentActivity() {
+    private var activeIntent by mutableStateOf<Intent?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        activeIntent = intent
         enableEdgeToEdge()
         setContent {
             AdropTheme {
                 AdropNavGraph(
-                    deepLinkUri  = intent?.data?.toString(),
-                    sharePayload = intent?.toSharePayload(),
+                    deepLinkUri  = activeIntent?.data?.toString(),
+                    sharePayload = activeIntent?.toSharePayload(),
                 )
             }
         }
@@ -35,6 +42,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        activeIntent = intent
     }
 }
 
@@ -94,9 +102,37 @@ private object Routes {
 @Composable
 private fun AdropNavGraph(deepLinkUri: String?, sharePayload: SharePayload?) {
     val navController = rememberNavController()
+    var pendingPairingUri by remember(deepLinkUri) {
+        mutableStateOf(deepLinkUri?.takeIf { it.startsWith("adrop://pair") })
+    }
 
-    // If launched from the share sheet, open SendScreen directly instead of Home.
-    val startDestination = if (sharePayload != null) Routes.SEND else Routes.HOME
+    val startDestination = when {
+        sharePayload != null -> Routes.SEND
+        pendingPairingUri != null -> Routes.SCAN
+        else                 -> Routes.HOME
+    }
+
+    LaunchedEffect(sharePayload, pendingPairingUri) {
+        when {
+            pendingPairingUri != null && navController.currentDestination?.route != Routes.SCAN ->
+                navController.navigate(Routes.SCAN)
+            sharePayload != null && navController.currentDestination?.route != Routes.SEND ->
+                navController.navigate(Routes.SEND)
+        }
+    }
+
+    fun finishPairing(deviceName: String) {
+        pendingPairingUri = null
+        val homeEntry = runCatching { navController.getBackStackEntry(Routes.HOME) }.getOrNull()
+        if (homeEntry != null) {
+            homeEntry.savedStateHandle["pairedDevice"] = deviceName
+            navController.popBackStack(Routes.HOME, inclusive = false)
+        } else {
+            navController.navigate(Routes.HOME) {
+                popUpTo(Routes.SCAN) { inclusive = true }
+            }
+        }
+    }
 
     NavHost(navController = navController, startDestination = startDestination) {
         composable(Routes.HOME) { backStackEntry ->
@@ -118,20 +154,27 @@ private fun AdropNavGraph(deepLinkUri: String?, sharePayload: SharePayload?) {
                     }
                 },
                 sharePayload = sharePayload,
+                onNavigatePair = { navController.navigate(Routes.SCAN) },
             )
         }
         composable(Routes.DEVICES) {
-            DevicesScreen(onBack = { navController.popBackStack() })
+            DevicesScreen(
+                onBack = { navController.popBackStack() },
+                onNavigatePair = { navController.navigate(Routes.SCAN) },
+            )
         }
         composable(Routes.SCAN) {
             ScanScreen(
-                onPaired = { deviceName ->
-                    navController
-                        .getBackStackEntry(Routes.HOME)
-                        .savedStateHandle["pairedDevice"] = deviceName
-                    navController.popBackStack(Routes.HOME, inclusive = false)
+                initialPairingUri = pendingPairingUri,
+                onPaired = ::finishPairing,
+                onBack   = {
+                    pendingPairingUri = null
+                    if (!navController.popBackStack()) {
+                        navController.navigate(Routes.HOME) {
+                            popUpTo(Routes.SCAN) { inclusive = true }
+                        }
+                    }
                 },
-                onBack   = { navController.popBackStack() },
             )
         }
     }

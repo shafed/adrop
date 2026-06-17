@@ -2,7 +2,7 @@
  * Bounded receive-window foreground service.
  *
  * Started explicitly by the user via "Open to receive" button. Runs a TLS
- * listener for DEFAULT_WINDOW_MS (5 minutes), then tears itself down.
+ * listener for GRACE_SEC while idle, then tears itself down.
  * Shows a persistent notification with remaining time and a "Stop" action.
  *
  * When a peer connects:
@@ -48,6 +48,7 @@ class ReceiveForegroundService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var windowJob: Job? = null
+    private var surfaceTickerJob: Job? = null
     private var mdnsManager: MdnsManager? = null
 
     // The listening server socket and the currently-open client sockets. Closing
@@ -107,14 +108,15 @@ class ReceiveForegroundService : Service() {
         awaitingResume = false
         graceDeadlineMs = System.currentTimeMillis() + GRACE_SEC * 1_000L
         startForeground(NOTIFICATION_ID_SERVICE, buildServiceNotification())
-        ReceiveWindowState.onStarted()
+        ReceiveWindowState.onStarted(remainingGraceSeconds())
 
-        // Refresh the notification once a second so the resume countdown shown
-        // after an aborted transfer ticks down. Only active while awaitingResume.
-        scope.launch {
+        // Refresh Home and the notification once a second so idle and resume
+        // countdowns tick down visibly.
+        surfaceTickerJob?.cancel()
+        surfaceTickerJob = scope.launch {
             while (isActive) {
                 delay(1_000)
-                if (awaitingResume) updateServiceNotification()
+                updateServiceSurfaces()
             }
         }
 
@@ -128,13 +130,21 @@ class ReceiveForegroundService : Service() {
         }
 
         windowJob = scope.launch {
+            var stoppedWithError = false
             try {
                 openReceiveWindow()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "receive window error: ${e.message}")
+                stoppedWithError = true
+                surfaceTickerJob?.cancel()
+                surfaceTickerJob = null
                 ReceiveWindowState.onError(e.message ?: "Receive window error")
             } finally {
-                ReceiveWindowState.onStopped()
+                surfaceTickerJob?.cancel()
+                surfaceTickerJob = null
+                if (!stoppedWithError) ReceiveWindowState.onStopped()
                 stopSelf()
             }
         }
@@ -155,6 +165,8 @@ class ReceiveForegroundService : Service() {
             openClients.forEach { runCatching { it.close() } }
             openClients.clear()
         }
+        surfaceTickerJob?.cancel()
+        surfaceTickerJob = null
         windowJob?.cancel()
         ReceiveWindowState.onStopped()
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -198,7 +210,7 @@ class ReceiveForegroundService : Service() {
                     activeTransfers.incrementAndGet()
                     openClients.add(client)
                     awaitingResume = false // a transfer is starting — drop the countdown
-                    updateServiceNotification()
+                    updateServiceSurfaces()
                     // Handle each connection in a child coroutine so we can accept the next.
                     launch {
                         try {
@@ -210,7 +222,7 @@ class ReceiveForegroundService : Service() {
                             // succeeded, or keeps it open for the grace period to
                             // allow a resume reconnect.
                             activeTransfers.decrementAndGet()
-                            updateServiceNotification()
+                            updateServiceSurfaces()
                         }
                     }
                 } catch (e: SocketException) {
@@ -457,14 +469,14 @@ class ReceiveForegroundService : Service() {
         val text = when {
             active == 1 -> "Receiving a transfer…"
             active > 1  -> "Receiving $active transfers…"
+            completedTransfer -> "Finishing transfer…"
             awaitingResume -> {
                 // Transfer was interrupted; counting down to close while we wait
                 // for the sender to reconnect and resume.
-                val secs = ((graceDeadlineMs - System.currentTimeMillis()) / 1_000)
-                    .coerceAtLeast(0)
+                val secs = remainingGraceSeconds()
                 "Transfer interrupted — closing in ${secs}s"
             }
-            else        -> "Ready to receive"
+            else        -> "Waiting for transfer — closing in ${remainingGraceSeconds()}s"
         }
 
         return NotificationCompat.Builder(this, CHANNEL_SERVICE)
@@ -474,6 +486,22 @@ class ReceiveForegroundService : Service() {
             .setOngoing(true)
             .addAction(android.R.drawable.ic_media_pause, "Stop", stopPi)
             .build()
+    }
+
+    private fun remainingGraceSeconds(): Int {
+        val remainingMs = (graceDeadlineMs - System.currentTimeMillis()).coerceAtLeast(0)
+        return ((remainingMs + 999L) / 1_000L).toInt()
+    }
+
+    private fun updateServiceSurfaces() {
+        val active = activeTransfers.get()
+        when {
+            active > 0 -> ReceiveWindowState.onReceiving(active)
+            completedTransfer -> ReceiveWindowState.onReceiving(active)
+            awaitingResume -> ReceiveWindowState.onResumeWait(remainingGraceSeconds())
+            else -> ReceiveWindowState.onWaiting(remainingGraceSeconds())
+        }
+        updateServiceNotification()
     }
 
     private fun updateServiceNotification() {

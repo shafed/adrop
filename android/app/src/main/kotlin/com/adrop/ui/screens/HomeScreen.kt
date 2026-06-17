@@ -9,8 +9,15 @@
  */
 package com.adrop.ui.screens
 
+import android.Manifest
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -20,14 +27,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.navigation.NavBackStackEntry
 import com.adrop.feature.receive.ReceiveForegroundService
+import com.adrop.ui.ReceiveWindowPhase
 import com.adrop.ui.ReceiveWindowState
-import com.google.accompanist.permissions.ExperimentalPermissionsApi
-import com.google.accompanist.permissions.isGranted
-import com.google.accompanist.permissions.rememberPermissionState
 
-@OptIn(ExperimentalPermissionsApi::class, ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     onNavigateSend:    () -> Unit,
@@ -41,19 +47,85 @@ fun HomeScreen(
     val receiveState by ReceiveWindowState.stateFlow.collectAsState()
     val receiveActive = receiveState.isRunning
 
-    // Notification permission (Android 13+)
-    val notifPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        rememberPermissionState(android.Manifest.permission.POST_NOTIFICATIONS)
-    } else null
-
     // Snackbar for receive-window errors and pair-success confirmations.
     val snackbarHostState = remember { SnackbarHostState() }
+    var notificationPermissionRequestInFlight by remember { mutableStateOf(false) }
+    var notificationPermissionDeniedEvents by remember { mutableStateOf(0) }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        notificationPermissionRequestInFlight = false
+        if (granted) {
+            notificationPermissionDeniedEvents = 0
+            startReceiveWindow(context)
+        } else {
+            notificationPermissionDeniedEvents += 1
+        }
+    }
+
+    val notificationPermissionDenied =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            notificationPermissionDeniedEvents > 0 &&
+            !hasNotificationPermission(context)
+
+    val countdownText = formatSeconds(receiveState.secondsRemaining)
+    val receiveTitle = when {
+        notificationPermissionRequestInFlight -> "Allow notifications"
+        notificationPermissionDenied && !receiveActive -> "Notifications off"
+        else -> when (receiveState.phase) {
+            ReceiveWindowPhase.WAITING -> "Waiting for transfer"
+            ReceiveWindowPhase.RECEIVING -> {
+                if (receiveState.activeTransfers > 1) {
+                    "Receiving ${receiveState.activeTransfers} transfers…"
+                } else if (receiveState.activeTransfers == 1) {
+                    "Receiving transfer…"
+                } else {
+                    "Finishing transfer…"
+                }
+            }
+            ReceiveWindowPhase.RESUME_WAIT -> "Transfer interrupted"
+            ReceiveWindowPhase.CLOSED -> "Open to receive"
+        }
+    }
+    val receiveSubtitle = when {
+        notificationPermissionRequestInFlight ->
+            "Waiting for Android notification permission"
+        notificationPermissionDenied && !receiveActive ->
+            "Enable notifications before opening a receive window"
+        else -> when (receiveState.phase) {
+            ReceiveWindowPhase.WAITING ->
+                "Closes in $countdownText if no transfer starts"
+            ReceiveWindowPhase.RECEIVING ->
+                "Window stays open until the active transfer finishes"
+            ReceiveWindowPhase.RESUME_WAIT ->
+                "Waiting $countdownText for the sender to reconnect"
+            ReceiveWindowPhase.CLOSED ->
+                "Opens for 60s while waiting"
+        }
+    }
+    val countdownProgress = (
+        (receiveState.secondsRemaining ?: 0).toFloat() / ReceiveForegroundService.GRACE_SEC
+    ).coerceIn(0f, 1f)
 
     // Receive-window errors from ReceiveForegroundService.
     LaunchedEffect(receiveState.lastError) {
         receiveState.lastError?.let { error ->
             snackbarHostState.showSnackbar("Receive error: $error")
             ReceiveWindowState.clearError()
+        }
+    }
+
+    LaunchedEffect(notificationPermissionDeniedEvents) {
+        if (notificationPermissionDeniedEvents > 0) {
+            val result = snackbarHostState.showSnackbar(
+                message = "Notifications are off, so the receive window was not opened.",
+                actionLabel = "Settings",
+                duration = SnackbarDuration.Long,
+            )
+            if (result == SnackbarResult.ActionPerformed) {
+                openNotificationSettings(context)
+            }
         }
     }
 
@@ -98,10 +170,11 @@ fun HomeScreen(
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors   = CardDefaults.cardColors(
-                    containerColor = if (receiveActive)
-                        MaterialTheme.colorScheme.primaryContainer
-                    else
-                        MaterialTheme.colorScheme.surfaceVariant
+                    containerColor = when {
+                        receiveActive -> MaterialTheme.colorScheme.primaryContainer
+                        notificationPermissionDenied -> MaterialTheme.colorScheme.errorContainer
+                        else -> MaterialTheme.colorScheme.surfaceVariant
+                    }
                 )
             ) {
                 Row(
@@ -113,45 +186,66 @@ fun HomeScreen(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            if (receiveActive) "Receiving…" else "Ready to receive",
+                            receiveTitle,
                             style = MaterialTheme.typography.titleMedium,
                         )
                         Spacer(Modifier.height(2.dp))
                         Text(
-                            text  = if (receiveActive)
-                                "Open — closes when the transfer finishes"
-                            else
-                                "Tap to open receive window",
+                            text  = receiveSubtitle,
                             style = MaterialTheme.typography.bodySmall,
                             color = LocalContentColor.current.copy(alpha = 0.7f),
                         )
                     }
                     Switch(
                         checked         = receiveActive,
+                        enabled         = !notificationPermissionRequestInFlight,
                         onCheckedChange = { checked ->
                             if (checked) {
-                                // Request notification permission first on API 33+.
-                                if (notifPermission != null && !notifPermission.status.isGranted) {
-                                    notifPermission.launchPermissionRequest()
+                                if (hasNotificationPermission(context)) {
+                                    notificationPermissionDeniedEvents = 0
+                                    startReceiveWindow(context)
+                                } else if (!notificationPermissionRequestInFlight) {
+                                    notificationPermissionRequestInFlight = true
+                                    notificationPermissionLauncher.launch(
+                                        Manifest.permission.POST_NOTIFICATIONS
+                                    )
                                 }
-                                startReceiveWindow(context)
                             } else {
+                                notificationPermissionRequestInFlight = false
                                 stopReceiveWindow(context)
                             }
                         }
                     )
                 }
 
-                // Indeterminate activity bar — shown while the window is open.
-                if (receiveActive) {
-                    LinearProgressIndicator(
-                        modifier        = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp)
-                            .padding(bottom = 12.dp),
-                        color           = MaterialTheme.colorScheme.primary,
-                        trackColor      = MaterialTheme.colorScheme.surfaceVariant,
-                    )
+                val progressModifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 12.dp)
+                when {
+                    notificationPermissionRequestInFlight -> {
+                        LinearProgressIndicator(
+                            modifier = progressModifier,
+                            color = MaterialTheme.colorScheme.primary,
+                            trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                        )
+                    }
+                    receiveState.phase == ReceiveWindowPhase.WAITING ||
+                        receiveState.phase == ReceiveWindowPhase.RESUME_WAIT -> {
+                        LinearProgressIndicator(
+                            progress = { countdownProgress },
+                            modifier = progressModifier,
+                            color = MaterialTheme.colorScheme.primary,
+                            trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                        )
+                    }
+                    receiveState.phase == ReceiveWindowPhase.RECEIVING -> {
+                        LinearProgressIndicator(
+                            modifier = progressModifier,
+                            color = MaterialTheme.colorScheme.primary,
+                            trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                        )
+                    }
                 }
             }
 
@@ -185,6 +279,27 @@ fun HomeScreen(
         }
     }
 }
+
+private fun hasNotificationPermission(context: Context): Boolean =
+    Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+        ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.POST_NOTIFICATIONS,
+        ) == PackageManager.PERMISSION_GRANTED
+
+private fun openNotificationSettings(context: Context) {
+    val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+            .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+    } else {
+        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+            .setData(Uri.parse("package:${context.packageName}"))
+    }
+    context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+}
+
+private fun formatSeconds(secondsRemaining: Int?): String =
+    "${(secondsRemaining ?: ReceiveForegroundService.GRACE_SEC).coerceAtLeast(0)}s"
 
 private fun startReceiveWindow(context: Context) {
     val intent = ReceiveForegroundService.startIntent(context)

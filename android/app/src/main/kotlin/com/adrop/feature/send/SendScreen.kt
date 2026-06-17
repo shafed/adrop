@@ -3,6 +3,8 @@ package com.adrop.feature.send
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
@@ -14,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.adrop.data.trust.TrustedDevice
@@ -25,6 +28,7 @@ fun SendScreen(
     vm: SendViewModel = viewModel(factory = SendViewModel.factory(LocalContext.current)),
     onBack: () -> Unit,
     sharePayload: SharePayload? = null,
+    onNavigatePair: () -> Unit = {},
 ) {
     val state by vm.state.collectAsState()
     val clipboardManager = LocalClipboardManager.current
@@ -91,14 +95,16 @@ fun SendScreen(
                 Text("Target Device", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(8.dp))
                 if (state.devices.isEmpty()) {
-                    Text("No paired devices. Go to Devices to pair.", style = MaterialTheme.typography.bodySmall)
+                    EmptyPairedDevices(onNavigatePair = onNavigatePair)
                 } else {
-                    state.devices.forEach { device ->
-                        DeviceChip(
-                            device = device,
-                            selected = state.selectedDevice == device,
-                            onClick  = { vm.selectDevice(device) },
-                        )
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        state.devices.forEach { device ->
+                            DeviceOption(
+                                device = device,
+                                selected = state.selectedDevice?.fingerprint == device.fingerprint,
+                                onClick  = { vm.selectDevice(device) },
+                            )
+                        }
                     }
                 }
             }
@@ -126,10 +132,10 @@ fun SendScreen(
                         enabled  = !state.isSending && state.selectedDevice != null,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        if (state.isSending) {
+                        if (state.isSending && state.sendPhase != null) {
                             CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
                             Spacer(Modifier.width(8.dp))
-                            Text("Sending…")
+                            Text(if (state.sendPhase == SendPhase.PREPARING) "Preparing…" else "Sending…")
                         } else {
                             Icon(Icons.Default.Send, contentDescription = null)
                             Spacer(Modifier.width(8.dp))
@@ -137,11 +143,8 @@ fun SendScreen(
                         }
                     }
 
-                    // Per-transfer progress message from Session.kt's ProgressFn callback.
-                    // Shows which file is currently being sent (e.g. "Sending photo.jpg (1/3)").
-                    // TODO: once Session.kt exposes byte-level progress via an extended ProgressFn,
-                    // replace this text label with a LinearProgressIndicator showing 0..1 fraction.
-                    state.transferProgress?.let { msg ->
+                    // Send status from preparation/hashing through Session.kt's ProgressFn callback.
+                    state.transferProgress?.takeIf { state.sendPhase != null }?.let { msg ->
                         Spacer(Modifier.height(4.dp))
                         LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                         Spacer(Modifier.height(4.dp))
@@ -236,23 +239,85 @@ fun SendScreen(
 }
 
 @Composable
-private fun DeviceChip(
+private fun EmptyPairedDevices(onNavigatePair: () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            text = "No paired devices yet.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedButton(
+            onClick = onNavigatePair,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(Icons.Default.Add, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("Pair Device")
+        }
+    }
+}
+
+@Composable
+private fun DeviceOption(
     device: TrustedDevice,
     selected: Boolean,
     onClick: () -> Unit,
 ) {
-    val colors = if (selected) {
-        FilterChipDefaults.filterChipColors(
-            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer
-        )
+    val borderColor = if (selected) {
+        MaterialTheme.colorScheme.primary
     } else {
-        FilterChipDefaults.filterChipColors()
+        MaterialTheme.colorScheme.outlineVariant
     }
-    FilterChip(
-        selected = selected,
-        onClick  = onClick,
-        label    = { Text(device.name) },
-        colors   = colors,
-    )
-    Spacer(Modifier.width(8.dp))
+    val containerColor = if (selected) {
+        MaterialTheme.colorScheme.primaryContainer
+    } else {
+        MaterialTheme.colorScheme.surface
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        shape = MaterialTheme.shapes.medium,
+        color = containerColor,
+        border = BorderStroke(1.dp, borderColor),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            RadioButton(selected = selected, onClick = null)
+            Spacer(Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = device.name,
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = device.addr,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = "Fingerprint …${device.fingerprintSuffix()}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
 }
+
+private fun TrustedDevice.fingerprintSuffix(): String =
+    fingerprint
+        .takeLast(12)
+        .chunked(4)
+        .joinToString(" ")

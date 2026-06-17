@@ -4,8 +4,10 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"image/color"
 	"net"
 	"os/exec"
 	"path/filepath"
@@ -15,12 +17,14 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/shafed/adrop/internal/ipc"
+	"github.com/shafed/adrop/internal/pairing"
 )
 
 // runGUI launches the Fyne drop window. It is a thin IPC client of the daemon:
@@ -75,6 +79,7 @@ type gui struct {
 	clipBtn    *widget.Button
 	statusLbl  *widget.Label // daemon-not-running / hint line
 	startBtn   *widget.Button
+	pairBtn    *widget.Button
 
 	outLabel *widget.Label
 	outBar   *widget.ProgressBar
@@ -86,6 +91,7 @@ type gui struct {
 	mu       sync.Mutex
 	peers    []string // device names, in dropdown order
 	staged   []string // last batch's files, kept for Retry on failure
+	pairing  bool     // true while a pairing dialog owns a pair-show request
 	stopCh   chan struct{}
 	stopOnce sync.Once
 }
@@ -112,6 +118,9 @@ func (g *gui) content() fyne.CanvasObject {
 	g.statusLbl.Wrapping = fyne.TextWrapWord
 	g.startBtn = widget.NewButtonWithIcon("Start daemon", theme.MediaPlayIcon(), g.startDaemon)
 	g.startBtn.Hide()
+	g.pairBtn = widget.NewButtonWithIcon("Pair device", theme.ContentAddIcon(), g.openPairDialog)
+	g.pairBtn.Importance = widget.HighImportance
+	g.pairBtn.Hide()
 
 	g.outLabel = widget.NewLabel("")
 	g.outBar = widget.NewProgressBar()
@@ -137,6 +146,7 @@ func (g *gui) content() fyne.CanvasObject {
 		widget.NewSeparator(),
 		g.statusLbl,
 		g.startBtn,
+		g.pairBtn,
 		g.fileList,
 		g.outLabel,
 		g.outBar,
@@ -198,10 +208,17 @@ func (g *gui) refreshPeers() {
 			g.peerSelect.PlaceHolder = "(no devices)"
 			g.peerSelect.ClearSelected()
 			g.setSendEnabled(false)
-			g.statusLbl.SetText("No paired devices — pair with `adrop pair show`")
+			g.statusLbl.SetText("No paired devices yet.")
+			g.pairBtn.Show()
+			if g.pairingActive() {
+				g.pairBtn.Disable()
+			} else {
+				g.pairBtn.Enable()
+			}
 		} else {
 			g.setSendEnabled(true)
 			g.statusLbl.SetText("")
+			g.pairBtn.Hide()
 			sel := last
 			if sel == "" || !contains(names, sel) {
 				sel = names[0]
@@ -210,6 +227,203 @@ func (g *gui) refreshPeers() {
 		}
 		g.peerSelect.Refresh()
 	})
+}
+
+// ----- pairing / first-run onboarding -----
+
+func (g *gui) openPairDialog() {
+	if !g.beginPairing() {
+		return
+	}
+	g.pairBtn.Disable()
+
+	intro := widget.NewLabel("Scan this QR with the device you want to pair.")
+	intro.Wrapping = fyne.TextWrapWord
+
+	status := widget.NewLabel("Preparing pairing code...")
+	status.Wrapping = fyne.TextWrapWord
+
+	waiting := widget.NewProgressBarInfinite()
+	waiting.Start()
+	qrBox := container.NewCenter(waiting)
+
+	var pairURI string
+	uriLabel := widget.NewLabel("")
+	uriLabel.Wrapping = fyne.TextWrapBreak
+	uriLabel.Hide()
+
+	copyBtn := widget.NewButtonWithIcon("Copy URI", theme.ContentCopyIcon(), func() {
+		if pairURI == "" {
+			return
+		}
+		g.app.Clipboard().SetContent(pairURI)
+		status.SetText("Pairing URI copied.")
+	})
+	copyBtn.Disable()
+
+	content := container.NewVBox(
+		intro,
+		qrBox,
+		copyBtn,
+		uriLabel,
+		status,
+	)
+	pairDialog := dialog.NewCustom("Pair a device", "Close", content, g.win)
+	pairDialog.Resize(fyne.NewSize(380, 520))
+
+	var connMu sync.Mutex
+	var conn net.Conn
+	closed := make(chan struct{})
+	var closedOnce sync.Once
+	closeConn := func() {
+		connMu.Lock()
+		defer connMu.Unlock()
+		if conn != nil {
+			_ = conn.Close()
+			conn = nil
+		}
+	}
+	pairDialog.SetOnClosed(func() {
+		closedOnce.Do(func() { close(closed) })
+		closeConn()
+		g.setPairing(false)
+		if g.pairBtn != nil {
+			g.pairBtn.Enable()
+		}
+		g.refreshPeers()
+	})
+	pairDialog.Show()
+
+	go func() {
+		c, err := net.Dial("unix", ipc.SocketPath())
+		if err != nil {
+			g.setPairing(false)
+			fyne.Do(func() {
+				waiting.Hide()
+				status.SetText("Daemon is not running. Start the daemon, then try pairing again.")
+				if g.pairBtn != nil {
+					g.pairBtn.Enable()
+				}
+			})
+			g.showDaemonDown(err)
+			return
+		}
+		select {
+		case <-closed:
+			_ = c.Close()
+			return
+		default:
+		}
+
+		connMu.Lock()
+		conn = c
+		connMu.Unlock()
+		defer closeConn()
+
+		if err := json.NewEncoder(c).Encode(ipc.Request{Cmd: ipc.CmdPairShow}); err != nil {
+			g.setPairing(false)
+			fyne.Do(func() {
+				waiting.Hide()
+				status.SetText("Pairing failed: " + err.Error())
+				if g.pairBtn != nil {
+					g.pairBtn.Enable()
+				}
+			})
+			return
+		}
+
+		dec := json.NewDecoder(bufio.NewReader(c))
+		for {
+			var resp ipc.Response
+			if err := dec.Decode(&resp); err != nil {
+				g.setPairing(false)
+				fyne.Do(func() {
+					waiting.Hide()
+					status.SetText("Pairing stopped.")
+					if g.pairBtn != nil {
+						g.pairBtn.Enable()
+					}
+				})
+				return
+			}
+			if resp.Err != "" {
+				g.setPairing(false)
+				fyne.Do(func() {
+					waiting.Hide()
+					status.SetText("Pairing failed: " + resp.Err)
+					if g.pairBtn != nil {
+						g.pairBtn.Enable()
+					}
+				})
+				return
+			}
+			if resp.Line != "" && strings.HasPrefix(resp.Line, "adrop://pair?d=") {
+				uri := resp.Line
+				qr, err := pairingQR(uri)
+				fyne.Do(func() {
+					pairURI = uri
+					waiting.Hide()
+					if err != nil {
+						status.SetText("Pairing code ready. Copy the URI to pair manually.")
+					} else {
+						qrBox.Objects = []fyne.CanvasObject{qr}
+						qrBox.Refresh()
+						status.SetText("Waiting for the other device...")
+					}
+					uriLabel.SetText(uri)
+					uriLabel.Show()
+					copyBtn.Enable()
+				})
+			} else if resp.Line != "" {
+				line := resp.Line
+				fyne.Do(func() { status.SetText(line) })
+			}
+			if resp.Done {
+				g.setPairing(false)
+				fyne.Do(func() {
+					waiting.Hide()
+					if g.pairBtn != nil {
+						g.pairBtn.Enable()
+					}
+				})
+				g.refreshPeers()
+				return
+			}
+		}
+	}()
+}
+
+func (g *gui) beginPairing() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.pairing {
+		return false
+	}
+	g.pairing = true
+	return true
+}
+
+func (g *gui) setPairing(on bool) {
+	g.mu.Lock()
+	g.pairing = on
+	g.mu.Unlock()
+}
+
+func (g *gui) pairingActive() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.pairing
+}
+
+func pairingQR(uri string) (fyne.CanvasObject, error) {
+	png, err := pairing.RenderPNG(uri)
+	if err != nil {
+		return nil, err
+	}
+	img := canvas.NewImageFromReader(bytes.NewReader(png), "adrop-pair.png")
+	img.FillMode = canvas.ImageFillContain
+	bg := canvas.NewRectangle(color.White)
+	return container.NewGridWrap(fyne.NewSize(260, 260), container.NewStack(bg, img)), nil
 }
 
 func (g *gui) setSendEnabled(on bool) {
@@ -458,6 +672,9 @@ func (g *gui) showDaemonDown(err error) {
 	fyne.Do(func() {
 		g.statusLbl.SetText("⚠ daemon not running")
 		g.startBtn.Show()
+		if g.pairBtn != nil {
+			g.pairBtn.Hide()
+		}
 		g.setSendEnabled(false)
 	})
 }
