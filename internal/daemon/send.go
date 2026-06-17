@@ -173,6 +173,9 @@ func (d *Daemon) SendFiles(ctx context.Context, target string, paths []string, p
 	}
 
 	for i, m := range manifest {
+		if err := ctx.Err(); err != nil {
+			return err // client disconnected (Ctrl-C) — abort before the next file
+		}
 		if progress != nil {
 			progress(fmt.Sprintf("sending %s (%d/%d)…", m.Name, i+1, len(manifest)))
 		}
@@ -193,7 +196,7 @@ func (d *Daemon) SendFiles(ctx context.Context, target string, paths []string, p
 		}
 		resumeOffset := offer.BytesDone
 
-		if err := d.sendOneFile(conn, i, fsPaths[i], m, resumeOffset, fileProgress); err != nil {
+		if err := d.sendOneFile(ctx, conn, i, fsPaths[i], m, resumeOffset, fileProgress); err != nil {
 			return fmt.Errorf("send %s: %w", m.Name, err)
 		}
 		ack, err := proto.ReadHeader(conn)
@@ -218,7 +221,7 @@ func (d *Daemon) SendFiles(ctx context.Context, target string, paths []string, p
 	return nil
 }
 
-func (d *Daemon) sendOneFile(conn *tls.Conn, index int, path string, m proto.FileMeta, resumeOffset int64, fp fileProgressFn) error {
+func (d *Daemon) sendOneFile(ctx context.Context, conn *tls.Conn, index int, path string, m proto.FileMeta, resumeOffset int64, fp fileProgressFn) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -239,6 +242,9 @@ func (d *Daemon) sendOneFile(conn *tls.Conn, index int, path string, m proto.Fil
 	buf := make([]byte, proto.ChunkSize)
 	bytesSent := resumeOffset
 	for {
+		if err := ctx.Err(); err != nil {
+			return err // client disconnected (Ctrl-C) — stop mid-file
+		}
 		n, rerr := f.Read(buf)
 		if n > 0 {
 			if err := proto.WriteMessage(conn, proto.Header{

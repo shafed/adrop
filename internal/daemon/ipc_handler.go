@@ -100,6 +100,8 @@ func (d *Daemon) handleIPC(ctx context.Context, conn net.Conn) {
 			send(ipc.Response{Err: err.Error(), Done: true})
 			return
 		}
+		ctx, cancel := cancelOnDisconnect(ctx, conn)
+		defer cancel()
 		if err := d.SendFiles(ctx, target, req.Files, progress); err != nil {
 			send(ipc.Response{Err: err.Error(), Done: true})
 			return
@@ -124,6 +126,8 @@ func (d *Daemon) handleIPC(ctx context.Context, conn net.Conn) {
 				return
 			}
 		}
+		ctx, cancel := cancelOnDisconnect(ctx, conn)
+		defer cancel()
 		if err := d.SendClipboard(ctx, target, data, mime); err != nil {
 			send(ipc.Response{Err: err.Error(), Done: true})
 			return
@@ -133,6 +137,22 @@ func (d *Daemon) handleIPC(ctx context.Context, conn net.Conn) {
 	default:
 		send(ipc.Response{Err: "unknown command: " + string(req.Cmd), Done: true})
 	}
+}
+
+// cancelOnDisconnect returns a child context that is cancelled when the CLI
+// closes its IPC connection (e.g. the user hits Ctrl-C on `adrop send`). It
+// spawns a reader on conn; once no more responses will be read by the client
+// the only event on the socket is its close, which unblocks the Read and
+// cancels. Use this only for commands that do not otherwise read from conn,
+// to avoid concurrent reads on the same connection.
+func cancelOnDisconnect(parent context.Context, conn net.Conn) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	go func() {
+		var buf [1]byte
+		_, _ = conn.Read(buf[:]) // returns on client close (EOF) or any stray byte
+		cancel()
+	}()
+	return ctx, cancel
 }
 
 // resolveTarget returns target if non-empty, or falls back to the last-used

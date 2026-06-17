@@ -50,6 +50,13 @@ class ReceiveForegroundService : Service() {
     private var windowJob: Job? = null
     private var mdnsManager: MdnsManager? = null
 
+    // The listening server socket and the currently-open client sockets. Closing
+    // a blocking socket from another thread is the only reliable way to unblock a
+    // coroutine stuck in a socket read/write, so stopWindow() closes these
+    // explicitly to abort an in-flight transfer when the user taps Stop.
+    @Volatile private var serverSocket: java.net.ServerSocket? = null
+    private val openClients = java.util.Collections.synchronizedSet(mutableSetOf<SSLSocket>())
+
     // Number of transfers currently being received. The receive window will not
     // close while this is > 0, so an in-flight transfer is never cut off.
     private val activeTransfers = AtomicInteger(0)
@@ -65,6 +72,12 @@ class ReceiveForegroundService : Service() {
     // arrived (or an aborted one hasn't reconnected) by then, the window closes.
     // Written from handler coroutines on abort, read by the accept loop.
     @Volatile private var graceDeadlineMs = 0L
+
+    // True while we're counting down toward closing after a transfer aborted
+    // (sender cancelled / dropped) and are waiting for a resume reconnect. The
+    // notification shows the countdown only in this state. Cleared as soon as a
+    // transfer becomes active again.
+    @Volatile private var awaitingResume = false
 
     // ---------------------------------------------------------------------------
     // Lifecycle
@@ -91,9 +104,19 @@ class ReceiveForegroundService : Service() {
 
     private fun startWindow() {
         completedTransfer = false
+        awaitingResume = false
         graceDeadlineMs = System.currentTimeMillis() + GRACE_SEC * 1_000L
         startForeground(NOTIFICATION_ID_SERVICE, buildServiceNotification())
         ReceiveWindowState.onStarted()
+
+        // Refresh the notification once a second so the resume countdown shown
+        // after an aborted transfer ticks down. Only active while awaitingResume.
+        scope.launch {
+            while (isActive) {
+                delay(1_000)
+                if (awaitingResume) updateServiceNotification()
+            }
+        }
 
         val trustRepo = TrustRepository.getInstance(applicationContext)
         mdnsManager = MdnsManager(applicationContext, trustRepo).also { m ->
@@ -123,6 +146,15 @@ class ReceiveForegroundService : Service() {
             m.unregister()
         }
         mdnsManager = null
+        // Close sockets first so any coroutine blocked in a socket read/write
+        // (i.e. an in-flight transfer) unblocks and aborts; cancelling the
+        // coroutine alone won't interrupt a blocking JVM socket call.
+        serverSocket?.let { runCatching { it.close() } }
+        serverSocket = null
+        synchronized(openClients) {
+            openClients.forEach { runCatching { it.close() } }
+            openClients.clear()
+        }
         windowJob?.cancel()
         ReceiveWindowState.onStopped()
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -144,10 +176,11 @@ class ReceiveForegroundService : Service() {
         )
 
         val listenAddr = "0.0.0.0:$LISTEN_PORT"
-        val serverSocket = listen(listenAddr, identity, trustManager)
+        val ssLocal = listen(listenAddr, identity, trustManager)
+        serverSocket = ssLocal
         Log.i(TAG, "listening on $listenAddr")
 
-        serverSocket.use { ss ->
+        ssLocal.use { ss ->
             // Poll accept() on a short interval so we can re-check the close
             // condition frequently. The window closes when no transfer is active
             // AND either a transfer has already completed (close right after the
@@ -163,12 +196,15 @@ class ReceiveForegroundService : Service() {
                     // handshake — so a connection accepted right at the deadline
                     // can't be torn down in the gap before handleClient marks it.
                     activeTransfers.incrementAndGet()
+                    openClients.add(client)
+                    awaitingResume = false // a transfer is starting — drop the countdown
                     updateServiceNotification()
                     // Handle each connection in a child coroutine so we can accept the next.
                     launch {
                         try {
                             handleClient(client, trustRepo, identity)
                         } finally {
+                            openClients.remove(client)
                             // Transfer ended (cleanly or aborted): refresh the
                             // notification. The next poll closes the window if it
                             // succeeded, or keeps it open for the grace period to
@@ -185,6 +221,7 @@ class ReceiveForegroundService : Service() {
                 }
             }
         }
+        serverSocket = null
         // withContext suspends until the child handler coroutines finish, so any
         // transfer still in flight here runs to completion before teardown.
         Log.i(TAG, "receive window closed")
@@ -255,8 +292,10 @@ class ReceiveForegroundService : Service() {
                 Log.e(TAG, "client handler error: ${e.message}")
                 // Transfer aborted (e.g. sender cancelled or network dropped).
                 // Extend the grace period from now so the window stays open long
-                // enough for the sender to reconnect and resume.
+                // enough for the sender to reconnect and resume, and surface a
+                // countdown in the notification while we wait.
                 graceDeadlineMs = System.currentTimeMillis() + GRACE_SEC * 1_000L
+                awaitingResume = true
             }
         }
     }
@@ -418,6 +457,13 @@ class ReceiveForegroundService : Service() {
         val text = when {
             active == 1 -> "Receiving a transfer…"
             active > 1  -> "Receiving $active transfers…"
+            awaitingResume -> {
+                // Transfer was interrupted; counting down to close while we wait
+                // for the sender to reconnect and resume.
+                val secs = ((graceDeadlineMs - System.currentTimeMillis()) / 1_000)
+                    .coerceAtLeast(0)
+                "Transfer interrupted — closing in ${secs}s"
+            }
             else        -> "Ready to receive"
         }
 
