@@ -426,12 +426,13 @@ class ReceiveForegroundService : Service() {
     }
 
     /**
-     * Builds the notification tap intent. A single received file opens via
-     * ACTION_VIEW on its MediaStore URI, wrapped in a system chooser so it works
-     * for any file type — not just images — and lets the user pick a handler app
-     * when several can open the file. The read-permission grant is forwarded to
-     * whichever app is chosen. Anything else (multiple files, clipboard, or no
-     * URI) falls back to launching MainActivity.
+     * Builds the notification tap intent. A single received file opens directly
+     * in the default app for its MIME type via ACTION_VIEW on its MediaStore URI
+     * (read permission granted to the handler), with no chooser prompt. The
+     * <queries> ACTION_VIEW declaration in the manifest makes resolveActivity()
+     * see the handler for any type, not just images. If nothing can handle the
+     * type — or for multiple files / clipboard / no URI — it falls back to
+     * launching MainActivity.
      */
     private fun contentIntentFor(result: SessionResult): PendingIntent {
         val single = (result as? SessionResult.Files)
@@ -445,19 +446,17 @@ class ReceiveForegroundService : Service() {
                 ?: "application/octet-stream"
             val view = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(single.mediaStoreUri, mime)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            // Wrap in a chooser: it always resolves (so any file type opens, not
-            // just ones with a single visible default handler) and forwards the
-            // URI read grant to the chosen app. NEW_TASK goes on the intent the
-            // PendingIntent actually starts — the chooser.
-            val chooser = Intent.createChooser(view, null).apply {
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            return PendingIntent.getActivity(
-                this, single.mediaStoreUri.hashCode(), chooser,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-            )
+            // Open in the default handler directly. Only guard against the case
+            // where no app can handle the type at all (then fall through to the
+            // app); when a handler exists, the system opens it without a prompt.
+            if (view.resolveActivity(packageManager) != null) {
+                return PendingIntent.getActivity(
+                    this, single.mediaStoreUri.hashCode(), view,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                )
+            }
         }
 
         return PendingIntent.getActivity(
