@@ -38,14 +38,44 @@ type fileProgressFn func(fileIndex int, bytesDone, totalBytes int64)
 const (
 	wakePollInterval = 500 * time.Millisecond
 	wakeTimeout      = 15 * time.Second
+
+	// mDNS address-recovery tuning: after a dial fails, retry the dial while the
+	// stored address keeps changing (an mDNS resolve, or a concurrent inbound
+	// connect, may correct a same-LAN IP change), bounded by mdnsRecoverTimeout.
+	mdnsRecoverPoll    = 200 * time.Millisecond
+	mdnsRecoverTimeout = 2 * time.Second
 )
 
-func (d *Daemon) dialPeer(target string) (*tls.Conn, config.Device, error) {
+func (d *Daemon) dialPeer(ctx context.Context, target string) (*tls.Conn, config.Device, error) {
 	dev, ok := d.store.Lookup(target)
 	if !ok {
 		return nil, config.Device{}, fmt.Errorf("no trusted device matching %q", target)
 	}
 	conn, fp, err := transport.Dial(dev.Addr, d.store.Certificate(), d)
+	if err != nil {
+		// The peer may have changed IP on the same LAN. Actively refresh its
+		// address via a one-shot mDNS resolve, then retry the dial whenever the
+		// stored address changes, before falling back to the (slower, relay-
+		// dependent) FCM wake path. This recovers a same-network IP change even
+		// when no relay is configured. Bounded by mdnsRecoverTimeout so a truly
+		// unreachable peer still proceeds to the wake path / final error.
+		d.refreshAddrViaMDNS(ctx)
+		deadline := time.Now().Add(mdnsRecoverTimeout)
+		for {
+			if cur, ok := d.store.Lookup(target); ok && cur.Addr != dev.Addr {
+				dev = cur
+				d.logger.Printf("retrying %s at refreshed addr %s", dev.Name, dev.Addr)
+				conn, fp, err = transport.Dial(dev.Addr, d.store.Certificate(), d)
+				if err == nil {
+					break
+				}
+			}
+			if time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(mdnsRecoverPoll)
+		}
+	}
 	if err != nil {
 		// Attempt FCM wake if we have the token and a relay is configured.
 		if dev.FcmToken != "" && d.relayAddr != "" {
@@ -58,13 +88,21 @@ func (d *Daemon) dialPeer(target string) (*tls.Conn, config.Device, error) {
 				// it succeeds or wakeTimeout elapses. This connects within a
 				// second or two of the push arriving rather than always waiting
 				// the full timeout.
+				//
+				// Re-Lookup the device each iteration so we pick up a fresh
+				// address: when the phone wakes it re-announces over mDNS, which
+				// updates the stored addr. Without this we'd keep dialing the
+				// stale IP from before the phone moved networks / changed IP.
 				d.logger.Printf("FCM wake sent; waiting up to %s for phone to open receive window…", wakeTimeout)
 				deadline := time.Now().Add(wakeTimeout)
 				for {
 					time.Sleep(wakePollInterval)
+					if cur, ok := d.store.Lookup(target); ok {
+						dev = cur
+					}
 					conn, fp, err = transport.Dial(dev.Addr, d.store.Certificate(), d)
 					if err == nil {
-						d.logger.Printf("phone %s woke up; connected", dev.Name)
+						d.logger.Printf("phone %s woke up; connected at %s", dev.Name, dev.Addr)
 						break
 					}
 					if time.Now().After(deadline) {
@@ -138,7 +176,7 @@ func (d *Daemon) SendFiles(ctx context.Context, target string, paths []string, p
 	if err != nil {
 		return err
 	}
-	conn, dev, err := d.dialPeer(target)
+	conn, dev, err := d.dialPeer(ctx, target)
 	if err != nil {
 		return err
 	}
@@ -272,7 +310,7 @@ func (d *Daemon) SendClipboard(ctx context.Context, target string, data []byte, 
 	if mime == "" {
 		mime = "text/plain"
 	}
-	conn, dev, err := d.dialPeer(target)
+	conn, dev, err := d.dialPeer(ctx, target)
 	if err != nil {
 		return err
 	}

@@ -77,6 +77,19 @@ func Browse(ctx context.Context, onRecord func(name, addr, fp string)) error {
 	}
 }
 
+// ResolveOnce runs a single avahi-browse pass (it self-terminates with -t) and
+// invokes onRecord for each resolved _adrop._tcp record found in the cache, then
+// returns. Use it to actively refresh a peer's address on demand — e.g. when a
+// direct dial fails because the peer changed IP — rather than waiting for the
+// continuous Browse loop to observe the next announcement. If avahi-browse is
+// not installed it returns nil without calling onRecord.
+func ResolveOnce(ctx context.Context, onRecord func(name, addr, fp string)) error {
+	if _, err := exec.LookPath("avahi-browse"); err != nil {
+		return nil
+	}
+	return runBrowse(ctx, onRecord)
+}
+
 func runBrowse(ctx context.Context, onRecord func(name, addr, fp string)) error {
 	cmd := exec.CommandContext(ctx, "avahi-browse", "-rtp", "_adrop._tcp")
 	stdout, err := cmd.StdoutPipe()

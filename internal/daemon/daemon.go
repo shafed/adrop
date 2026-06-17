@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/shafed/adrop/internal/clipboard"
 	"github.com/shafed/adrop/internal/config"
@@ -253,6 +254,31 @@ func (d *Daemon) startMDNS(ctx context.Context) {
 			d.logger.Printf("mdns: browse: %v", err)
 		}
 	}()
+}
+
+// refreshAddrViaMDNS runs a single active mDNS resolve and updates the stored
+// address of any trusted peer it finds. It is used as a fallback when a direct
+// dial fails (e.g. the peer changed IP on the same LAN): the continuous Browse
+// loop is passive and may not have observed the new address yet, so we kick off
+// one resolve pass on demand. Best-effort and bounded — errors are logged, not
+// returned, and a missing avahi just no-ops.
+func (d *Daemon) refreshAddrViaMDNS(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	selfFP := d.store.Fingerprint()
+	err := mdns.ResolveOnce(ctx, func(name, addr, fp string) {
+		if fp == selfFP {
+			return
+		}
+		if _, trusted := d.store.IsTrusted(fp); !trusted {
+			return
+		}
+		d.store.UpdateAddr(fp, addr)
+		d.logger.Printf("mDNS: refreshed addr for %s to %s", name, addr)
+	})
+	if err != nil {
+		d.logger.Printf("mdns: resolve: %v", err)
+	}
 }
 
 // subscribe registers a new receive-event channel and returns it along with an

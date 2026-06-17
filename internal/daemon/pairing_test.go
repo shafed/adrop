@@ -136,3 +136,38 @@ func TestSelfHealAddrOnInboundConnect(t *testing.T) {
 	dev, _ := pc.store.Lookup(fp)
 	t.Fatalf("stored addr not self-healed: got %q want %q", dev.Addr, want)
 }
+
+// TestDialRecoversFromStaleAddr covers the same-LAN IP-change case: the PC has a
+// stale stored address for the phone, so the first dial fails. While dialPeer is
+// in its recovery loop, the stored address is corrected (as an mDNS resolve or a
+// concurrent inbound connect would do); the send must then pick up the fresh
+// address and succeed without any relay/FCM wake configured.
+func TestDialRecoversFromStaleAddr(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pc := newTestDaemon(t, ctx, "pc")
+	phone := newTestDaemon(t, ctx, "phone")
+	pair(t, pc, phone)
+
+	fp := phone.store.Fingerprint()
+	good, _ := pc.store.Lookup(fp)
+	goodAddr := good.Addr
+
+	// Point the PC at a dead port so the initial dial fails.
+	pc.store.UpdateAddr(fp, "127.0.0.1:1") // port 1: nothing listening
+
+	// Simulate mDNS/inbound correcting the address shortly after the send starts,
+	// while dialPeer is polling in its recovery loop.
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		pc.store.UpdateAddr(fp, goodAddr)
+	}()
+
+	srcDir := t.TempDir()
+	src := srcDir + "/recover.bin"
+	mustWrite(t, src, randomBytes(t, 64*1024))
+	if err := pc.d.SendFiles(ctx, "phone", []string{src}, nil); err != nil {
+		t.Fatalf("send did not recover from stale addr: %v", err)
+	}
+}
