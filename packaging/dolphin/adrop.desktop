@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=KonqPopupMenu/Plugin
+MimeType=*/*;
+Actions=SendViaAdrop
+
+[Desktop Action SendViaAdrop]
+Name=Send via adrop
+Icon=network-wireless
+Exec=adrop send %F

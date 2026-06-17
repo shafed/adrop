@@ -59,7 +59,7 @@ func newTestDaemon(t *testing.T, ctx context.Context, name string) *testDaemon {
 			td.clipMu.Unlock()
 			return nil
 		},
-		ClipboardGet: func(_ context.Context) ([]byte, error) {
+		ClipboardGet: func(_ context.Context, _ string) ([]byte, error) {
 			td.clipMu.Lock()
 			defer td.clipMu.Unlock()
 			return append([]byte(nil), td.clip...), nil

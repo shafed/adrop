@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"time"
 
@@ -27,11 +28,18 @@ func (d *Daemon) handleIPC(ctx context.Context, conn net.Conn) {
 
 	switch req.Cmd {
 	case ipc.CmdStatus:
+		lastPeerName := ""
+		if fp := d.store.LastPeer(); fp != "" {
+			if dev, ok := d.store.Lookup(fp); ok {
+				lastPeerName = dev.Name
+			}
+		}
 		send(ipc.Response{Status: &ipc.StatusInfo{
 			Name:        d.name,
 			Fingerprint: d.store.Fingerprint(),
 			ListenAddr:  d.tcpAddr,
 			NumDevices:  len(d.store.Devices()),
+			LastPeer:    lastPeerName,
 		}, Done: true})
 
 	case ipc.CmdPairShow:
@@ -87,23 +95,36 @@ func (d *Daemon) handleIPC(ctx context.Context, conn net.Conn) {
 		send(ipc.Response{Line: "revoked", Done: true})
 
 	case ipc.CmdSendFiles:
-		if err := d.SendFiles(ctx, req.Target, req.Files, progress); err != nil {
+		target, err := d.resolveTarget(req.Target)
+		if err != nil {
+			send(ipc.Response{Err: err.Error(), Done: true})
+			return
+		}
+		if err := d.SendFiles(ctx, target, req.Files, progress); err != nil {
 			send(ipc.Response{Err: err.Error(), Done: true})
 			return
 		}
 		send(ipc.Response{Done: true})
 
 	case ipc.CmdSendClip:
+		target, err := d.resolveTarget(req.Target)
+		if err != nil {
+			send(ipc.Response{Err: err.Error(), Done: true})
+			return
+		}
+		mime := req.MIME
+		if mime == "" {
+			mime = "text/plain"
+		}
 		data := []byte(req.Text)
 		if len(data) == 0 {
-			var err error
-			data, err = d.clipboardGet(ctx)
+			data, err = d.clipboardGet(ctx, mime)
 			if err != nil {
 				send(ipc.Response{Err: "read clipboard: " + err.Error(), Done: true})
 				return
 			}
 		}
-		if err := d.SendClipboard(ctx, req.Target, data, "text/plain"); err != nil {
+		if err := d.SendClipboard(ctx, target, data, mime); err != nil {
 			send(ipc.Response{Err: err.Error(), Done: true})
 			return
 		}
@@ -112,6 +133,23 @@ func (d *Daemon) handleIPC(ctx context.Context, conn net.Conn) {
 	default:
 		send(ipc.Response{Err: "unknown command: " + string(req.Cmd), Done: true})
 	}
+}
+
+// resolveTarget returns target if non-empty, or falls back to the last-used
+// peer fingerprint. Returns an error if neither is available.
+func (d *Daemon) resolveTarget(target string) (string, error) {
+	if target != "" {
+		return target, nil
+	}
+	fp := d.store.LastPeer()
+	if fp == "" {
+		return "", fmt.Errorf("no target specified and no previous send on record; use: adrop send <peer> ...")
+	}
+	dev, ok := d.store.Lookup(fp)
+	if !ok {
+		return "", fmt.Errorf("last-used device is no longer paired; use: adrop send <peer> ...")
+	}
+	return dev.Name, nil
 }
 
 // waitPairOrDisconnect blocks during a pair-show until pairing completes, the

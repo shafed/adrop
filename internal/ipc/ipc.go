@@ -51,6 +51,11 @@ type Request struct {
 
 	// SendClipboard: optional explicit text (otherwise daemon reads wl-paste).
 	Text string `json:"text,omitempty"`
+
+	// SendClipboard: MIME type of the clipboard data (default "text/plain").
+	// When set to e.g. "image/png" and Text is empty, the daemon reads the
+	// clipboard via wl-paste --type image/png instead of plain text.
+	MIME string `json:"mime,omitempty"`
 }
 
 // Response is one daemon->CLI message. Multiple may stream for one Request.
@@ -88,4 +93,5 @@ type StatusInfo struct {
 	Fingerprint string `json:"fingerprint"`
 	ListenAddr  string `json:"listen_addr"`
 	NumDevices  int    `json:"num_devices"`
+	LastPeer    string `json:"last_peer,omitempty"` // name of last-used send target
 }

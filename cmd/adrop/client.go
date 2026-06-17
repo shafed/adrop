@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/shafed/adrop/internal/ipc"
@@ -58,6 +59,9 @@ func runStatus(_ []string) error {
 			fmt.Printf("fingerprint: %s\n", s.Fingerprint)
 			fmt.Printf("listen addr: %s\n", s.ListenAddr)
 			fmt.Printf("devices:     %d trusted\n", s.NumDevices)
+			if s.LastPeer != "" {
+				fmt.Printf("last peer:   %s\n", s.LastPeer)
+			}
 		}
 		if r.Line != "" {
 			fmt.Println(r.Line)
@@ -116,12 +120,26 @@ func runRevoke(args []string) error {
 }
 
 func runSend(args []string) error {
-	if len(args) < 2 {
-		return fmt.Errorf("usage: adrop send <peer> <file> [file...]")
+	if len(args) < 1 {
+		return fmt.Errorf("usage: adrop send [<peer>] <file> [file...]")
 	}
-	peer := args[0]
-	paths := make([]string, 0, len(args)-1)
-	for _, p := range args[1:] {
+	// Heuristic: if the first arg looks like a file path (exists on disk), treat
+	// it as a file and leave peer empty so the daemon uses the last-used device.
+	var peer string
+	var filePaths []string
+	if _, err := os.Stat(args[0]); err == nil {
+		// First arg is a file — no peer specified.
+		filePaths = args
+	} else {
+		// First arg is the peer name.
+		if len(args) < 2 {
+			return fmt.Errorf("usage: adrop send [<peer>] <file> [file...]")
+		}
+		peer = args[0]
+		filePaths = args[1:]
+	}
+	paths := make([]string, 0, len(filePaths))
+	for _, p := range filePaths {
 		abs, err := filepath.Abs(p)
 		if err != nil {
 			return err
@@ -135,12 +153,35 @@ func runSend(args []string) error {
 }
 
 func runClip(args []string) error {
-	if len(args) < 1 {
-		return fmt.Errorf("usage: adrop clip <peer> [text]")
+	// Usage: adrop clip [--mime <type>] [<peer>] [text]
+	// If peer is omitted the daemon uses the last-used device.
+	req := ipc.Request{Cmd: ipc.CmdSendClip}
+	mime := "text/plain"
+
+	// Strip --mime flag from the front.
+	remaining := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--mime" && i+1 < len(args) {
+			mime = args[i+1]
+			i++
+		} else if strings.HasPrefix(args[i], "--mime=") {
+			mime = strings.TrimPrefix(args[i], "--mime=")
+		} else {
+			remaining = append(remaining, args[i])
+		}
 	}
-	req := ipc.Request{Cmd: ipc.CmdSendClip, Target: args[0]}
-	if len(args) > 1 {
-		req.Text = args[1]
+	if mime != "text/plain" {
+		req.MIME = mime
+	}
+
+	switch len(remaining) {
+	case 0:
+		// no peer, no text — daemon resolves peer; reads wl-paste
+	case 1:
+		req.Target = remaining[0]
+	default:
+		req.Target = remaining[0]
+		req.Text = remaining[1]
 	}
 	return roundtrip(req, printLines)
 }

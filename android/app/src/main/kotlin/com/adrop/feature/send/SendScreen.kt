@@ -10,6 +10,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -42,6 +43,13 @@ fun SendScreen(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
         if (uris.isNotEmpty()) vm.setPickedUris(uris)
+    }
+
+    // Image picker for clipboard PNG mode
+    val imagePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        vm.setPickedImageUri(uri)
     }
 
     // Result snackbar
@@ -150,36 +158,77 @@ fun SendScreen(
             item {
                 Text("Clipboard", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value         = state.clipboardText,
-                    onValueChange = vm::setClipboardText,
-                    label         = { Text("Clipboard text") },
-                    modifier      = Modifier.fillMaxWidth(),
-                    minLines      = 3,
-                    maxLines      = 6,
-                )
+
+                // MIME type selector
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment     = Alignment.CenterVertically,
+                ) {
+                    ClipboardMimeMode.entries.forEach { mode ->
+                        FilterChip(
+                            selected = state.clipboardMime == mode,
+                            onClick  = { vm.setClipboardMime(mode) },
+                            label    = { Text(mode.label) },
+                        )
+                    }
+                }
                 Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick = {
-                            val text = clipboardManager.getText()?.toString() ?: ""
-                            vm.setClipboardText(text)
-                        },
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Icon(Icons.Default.ContentPaste, contentDescription = null)
-                        Spacer(Modifier.width(4.dp))
-                        Text("Paste")
+
+                when (state.clipboardMime) {
+                    ClipboardMimeMode.IMAGE_PNG -> {
+                        // Image picker button
+                        OutlinedButton(
+                            onClick  = { imagePicker.launch("image/*") },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled  = !state.isSending,
+                        ) {
+                            Icon(Icons.Default.Image, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                if (state.pickedImageUri != null) "Image selected"
+                                else "Pick Image"
+                            )
+                        }
                     }
-                    Button(
-                        onClick  = { vm.sendClipboard() },
-                        enabled  = !state.isSending && state.selectedDevice != null && state.clipboardText.isNotBlank(),
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Icon(Icons.Default.Send, contentDescription = null)
-                        Spacer(Modifier.width(4.dp))
-                        Text("Send")
+                    else -> {
+                        OutlinedTextField(
+                            value         = state.clipboardText,
+                            onValueChange = vm::setClipboardText,
+                            label         = {
+                                Text(if (state.clipboardMime == ClipboardMimeMode.HTML) "HTML" else "Clipboard text")
+                            },
+                            modifier      = Modifier.fillMaxWidth(),
+                            minLines      = 3,
+                            maxLines      = 6,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = {
+                                val text = clipboardManager.getText()?.toString() ?: ""
+                                vm.setClipboardText(text)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(Icons.Default.ContentPaste, contentDescription = null)
+                            Spacer(Modifier.width(4.dp))
+                            Text("Paste")
+                        }
                     }
+                }
+
+                Spacer(Modifier.height(8.dp))
+                val sendEnabled = !state.isSending && state.selectedDevice != null && when (state.clipboardMime) {
+                    ClipboardMimeMode.IMAGE_PNG -> state.pickedImageUri != null
+                    else -> state.clipboardText.isNotBlank()
+                }
+                Button(
+                    onClick  = { vm.sendClipboard() },
+                    enabled  = sendEnabled,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Default.Send, contentDescription = null)
+                    Spacer(Modifier.width(4.dp))
+                    Text("Send Clipboard")
                 }
             }
         }

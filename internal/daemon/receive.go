@@ -149,7 +149,7 @@ func (d *Daemon) receiveFilesWithProgress(ctx context.Context, conn *tls.Conn, p
 		if hdr.Type == proto.TypeSessionEnd {
 			break
 		}
-		// TypeProgress is advisory: log it and keep waiting for file_header.
+		// TypeProgress is advisory: log it and keep waiting for the next frame.
 		if hdr.Type == proto.TypeProgress {
 			if onProgress != nil {
 				onProgress(hdr.FileIndex, hdr.BytesDone, hdr.TotalBytes)
@@ -159,19 +159,18 @@ func (d *Daemon) receiveFilesWithProgress(ctx context.Context, conn *tls.Conn, p
 			}
 			continue
 		}
-		// Resume query: sender asks how many bytes of this file we already have.
+		// TypeResumeQuery: sender asks how many bytes of this file we already have.
+		// Reply with TypeResumeOffer carrying the .adrop-part size (0 if none).
 		if hdr.Type == proto.TypeResumeQuery {
-			resumeOffset := int64(0)
-			if resume {
-				resumeOffset = d.partialFileBytes(manifest, hdr.FileIndex, hdr.SHA256)
+			var partBytes int64
+			if resume && hdr.FileIndex >= 0 && hdr.FileIndex < len(manifest) {
+				partBytes = d.partialFileBytes(manifest[hdr.FileIndex], hdr.SHA256)
 			}
-			if err := proto.WriteControl(conn, proto.Header{
+			_ = proto.WriteControl(conn, proto.Header{
 				Type:      proto.TypeResumeOffer,
 				FileIndex: hdr.FileIndex,
-				BytesDone: resumeOffset,
-			}); err != nil {
-				return fmt.Errorf("send resume offer: %w", err)
-			}
+				BytesDone: partBytes,
+			})
 			continue
 		}
 		if hdr.Type != proto.TypeFileHeader {
@@ -181,9 +180,9 @@ func (d *Daemon) receiveFilesWithProgress(ctx context.Context, conn *tls.Conn, p
 			return fmt.Errorf("file index %d out of range", hdr.FileIndex)
 		}
 		meta := manifest[hdr.FileIndex]
-		resumeOffset := int64(0)
+		var resumeOffset int64
 		if resume {
-			resumeOffset = d.partialFileBytes(manifest, hdr.FileIndex, meta.SHA256)
+			resumeOffset = d.partialFileBytes(meta, meta.SHA256)
 		}
 		path, err := d.receiveOneFile(conn, meta, resumeOffset)
 		if err != nil {
@@ -206,27 +205,34 @@ func (d *Daemon) receiveFilesWithProgress(ctx context.Context, conn *tls.Conn, p
 	return nil
 }
 
-// partialFileBytes returns the size of an existing .adrop-part file for the
-// given manifest entry, or 0 if there is no valid partial file.
-// A partial file larger than or equal to the full size is treated as invalid.
-func (d *Daemon) partialFileBytes(manifest []proto.FileMeta, fileIndex int, _ string) int64 {
-	if fileIndex < 0 || fileIndex >= len(manifest) {
-		return 0
+// partialFileBytes returns the size of a .adrop-part file for meta,
+// verifying it belongs to the same original via sha256. Returns 0 if absent,
+// already complete, or hash-mismatched.
+func (d *Daemon) partialFileBytes(meta proto.FileMeta, sha256hash string) int64 {
+	var dest string
+	if meta.RelPath != "" {
+		dest = filepath.Join(d.downloadDir, filepath.FromSlash(meta.RelPath))
+	} else {
+		dest = filepath.Join(d.downloadDir, sanitizeName(meta.Name))
 	}
-	meta := manifest[fileIndex]
-	dest := uniquePath(d.downloadDir, sanitizeName(meta.Name))
 	tmp := dest + ".adrop-part"
-	info, err := os.Stat(tmp)
-	if err != nil || info.Size() == 0 || info.Size() >= meta.Size {
+	fi, err := os.Stat(tmp)
+	if err != nil || fi.Size() == 0 || fi.Size() >= meta.Size {
 		return 0
 	}
-	return info.Size()
+	if sha256hash != "" && sha256hash != meta.SHA256 {
+		_ = os.Remove(tmp) // stale partial from a different file
+		return 0
+	}
+	return fi.Size()
 }
 
 // receiveOneFile streams chunks for a single file to a uniquely-named path in
 // the download dir, verifying the SHA-256 from the manifest. On hash mismatch
-// the partial file is removed. resumeOffset bytes are assumed already written
-// (appended to an existing .adrop-part file).
+// the partial file is removed.
+//
+// resumeOffset > 0 means a .adrop-part already has that many bytes; the
+// function appends to it and seeds the hasher from the existing data.
 func (d *Daemon) receiveOneFile(conn *tls.Conn, meta proto.FileMeta, resumeOffset int64) (string, error) {
 	var dest string
 	if meta.RelPath != "" {
@@ -245,37 +251,27 @@ func (d *Daemon) receiveOneFile(conn *tls.Conn, meta proto.FileMeta, resumeOffse
 		dest = uniquePath(d.downloadDir, sanitizeName(meta.Name))
 	}
 	tmp := dest + ".adrop-part"
+
 	hasher := sha256.New()
+	var got int64
+
 	var f *os.File
 	var err error
-	got := int64(0)
 	if resumeOffset > 0 {
+		// Seed the hasher from the existing partial so the final digest is correct.
+		if existing, rerr := os.Open(tmp); rerr == nil {
+			_, _ = io.Copy(hasher, existing)
+			existing.Close()
+		}
 		f, err = os.OpenFile(tmp, os.O_WRONLY|os.O_APPEND, 0o644)
-		if err != nil {
-			// Partial file gone — fall through to truncate+create below.
-			resumeOffset = 0
-		} else {
-			// Replay existing bytes into the hasher so the final digest is correct.
-			partial, rerr := os.Open(tmp)
-			if rerr != nil {
-				f.Close()
-				return "", rerr
-			}
-			if _, rerr = io.CopyN(hasher, partial, resumeOffset); rerr != nil {
-				partial.Close()
-				f.Close()
-				return "", fmt.Errorf("replay partial into hasher: %w", rerr)
-			}
-			partial.Close()
-			got = resumeOffset
-		}
-	}
-	if resumeOffset == 0 {
+		got = resumeOffset
+	} else {
 		f, err = os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-		if err != nil {
-			return "", err
-		}
 	}
+	if err != nil {
+		return "", err
+	}
+
 	w := io.MultiWriter(f, hasher)
 	cleanup := func() { f.Close(); os.Remove(tmp) }
 	for {

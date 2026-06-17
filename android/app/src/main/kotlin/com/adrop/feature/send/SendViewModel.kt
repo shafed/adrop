@@ -25,11 +25,22 @@ import com.adrop.net.transport.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 
+enum class ClipboardMimeMode(val mime: String, val label: String) {
+    TEXT("text/plain", "Text"),
+    IMAGE_PNG("image/png", "Image (PNG)"),
+    HTML("text/html", "HTML"),
+}
+
+private const val PREFS_NAME = "adrop_send_prefs"
+private const val KEY_LAST_DEVICE_FP = "last_device_fingerprint"
+
 data class SendUiState(
     val devices:        List<TrustedDevice> = emptyList(),
     val selectedDevice: TrustedDevice?      = null,
     val pickedUris:     List<Uri>           = emptyList(),
     val clipboardText:  String              = "",
+    val clipboardMime:  ClipboardMimeMode   = ClipboardMimeMode.TEXT,
+    val pickedImageUri: Uri?                = null,
     val isSending:      Boolean             = false,
     val result:         SendResult?         = null,
     /**
@@ -55,13 +66,26 @@ class SendViewModel(
     private val trustRepo: TrustRepository,
 ) : ViewModel() {
 
+    private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
     private val _state = MutableStateFlow(SendUiState())
     val state: StateFlow<SendUiState> = _state.asStateFlow()
 
     init {
         viewModelScope.launch {
             trustRepo.devicesFlow.collect { devices ->
-                _state.update { it.copy(devices = devices) }
+                val current = _state.value
+                // Auto-select: keep current selection if still valid, otherwise
+                // restore last-used device, otherwise pick the only device if there's one.
+                val lastFp = prefs.getString(KEY_LAST_DEVICE_FP, null)
+                val autoSelect = when {
+                    current.selectedDevice != null && devices.any { it.fingerprint == current.selectedDevice.fingerprint } ->
+                        current.selectedDevice
+                    lastFp != null -> devices.find { it.fingerprint == lastFp }
+                    devices.size == 1 -> devices.first()
+                    else -> null
+                }
+                _state.update { it.copy(devices = devices, selectedDevice = autoSelect) }
             }
         }
     }
@@ -76,6 +100,14 @@ class SendViewModel(
 
     fun setClipboardText(text: String) {
         _state.update { it.copy(clipboardText = text) }
+    }
+
+    fun setClipboardMime(mode: ClipboardMimeMode) {
+        _state.update { it.copy(clipboardMime = mode, pickedImageUri = null) }
+    }
+
+    fun setPickedImageUri(uri: Uri?) {
+        _state.update { it.copy(pickedImageUri = uri) }
     }
 
     fun sendFiles() {
@@ -95,6 +127,9 @@ class SendViewModel(
                     }
                 }
             }
+            if (result.isSuccess) {
+                prefs.edit().putString(KEY_LAST_DEVICE_FP, device.fingerprint).apply()
+            }
             _state.update {
                 it.copy(
                     isSending        = false,
@@ -107,16 +142,41 @@ class SendViewModel(
     }
 
     fun sendClipboard() {
-        val device = _state.value.selectedDevice ?: return
-        val text   = _state.value.clipboardText
-        if (text.isBlank()) {
-            _state.update { it.copy(result = SendResult.Error("Clipboard is empty")) }
-            return
+        val state  = _state.value
+        val device = state.selectedDevice ?: return
+        val mime   = state.clipboardMime
+
+        val bytes: ByteArray
+        when (mime) {
+            ClipboardMimeMode.IMAGE_PNG -> {
+                val uri = state.pickedImageUri
+                if (uri == null) {
+                    _state.update { it.copy(result = SendResult.Error("No image selected")) }
+                    return
+                }
+                bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    ?: run {
+                        _state.update { it.copy(result = SendResult.Error("Cannot read image")) }
+                        return
+                    }
+            }
+            else -> {
+                val text = state.clipboardText
+                if (text.isBlank()) {
+                    _state.update { it.copy(result = SendResult.Error("Clipboard is empty")) }
+                    return
+                }
+                bytes = text.toByteArray(Charsets.UTF_8)
+            }
         }
+
         _state.update { it.copy(isSending = true, result = null) }
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
-                runCatching { doSendClipboard(device, text) }
+                runCatching { doSendClipboardBytes(device, bytes, mime.mime) }
+            }
+            if (result.isSuccess) {
+                prefs.edit().putString(KEY_LAST_DEVICE_FP, device.fingerprint).apply()
             }
             _state.update {
                 it.copy(
@@ -179,7 +239,7 @@ class SendViewModel(
         }
     }
 
-    private suspend fun doSendClipboard(device: TrustedDevice, text: String) {
+    private suspend fun doSendClipboardBytes(device: TrustedDevice, bytes: ByteArray, mime: String) {
         val identity = IdentityStore.getOrCreate(context)
         val devices  = trustRepo.getAll()
         val trustMgr = PinningTrustManager(isTrusted = { fp -> devices.find { it.fingerprint == fp } })
@@ -201,7 +261,8 @@ class SendViewModel(
             sendClipboard(
                 out  = out,
                 inp  = inp,
-                text = text.toByteArray(Charsets.UTF_8),
+                text = bytes,
+                mime = mime,
             )
         }
     }

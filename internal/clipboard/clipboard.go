@@ -1,7 +1,7 @@
 // Package clipboard wraps the Wayland clipboard tools wl-copy / wl-paste.
 //
 // The SPEC targets Wayland (KDE/Sway/Hyprland) and specifies wl-clipboard for
-// the PC side. Only plain text is handled in the MVP.
+// the PC side.
 package clipboard
 
 import (
@@ -11,10 +11,22 @@ import (
 	"os/exec"
 )
 
-// Paste reads the current clipboard text via wl-paste.
+// Paste reads the current clipboard for the given MIME type via wl-paste.
+// For "text/plain" (or empty) it adds -n to suppress the trailing newline.
 func Paste(ctx context.Context) ([]byte, error) {
-	// -n: don't append a trailing newline; -t text/plain: force text.
-	cmd := exec.CommandContext(ctx, "wl-paste", "-n", "-t", "text/plain")
+	return Get(ctx, "text/plain")
+}
+
+// Get reads the clipboard for the given MIME type.
+func Get(ctx context.Context, mime string) ([]byte, error) {
+	if mime == "" {
+		mime = "text/plain"
+	}
+	args := []string{"-t", mime}
+	if mime == "text/plain" {
+		args = append([]string{"-n"}, args...)
+	}
+	cmd := exec.CommandContext(ctx, "wl-paste", args...)
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
@@ -24,7 +36,7 @@ func Paste(ctx context.Context) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// Copy writes data to the clipboard via wl-copy.
+// Copy writes data to the clipboard via wl-copy with the given MIME type.
 func Copy(ctx context.Context, data []byte, mime string) error {
 	if mime == "" {
 		mime = "text/plain"
