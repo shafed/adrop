@@ -11,10 +11,6 @@ package com.adrop.ui.screens
 
 import android.content.Context
 import android.os.Build
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -121,20 +117,14 @@ fun HomeScreen(
                             style = MaterialTheme.typography.titleMedium,
                         )
                         Spacer(Modifier.height(2.dp))
-                        AnimatedContent(
-                            targetState = if (receiveActive) receiveState.remainingSeconds else -1,
-                            transitionSpec = { fadeIn() togetherWith fadeOut() },
-                            label = "countdown",
-                        ) { seconds ->
-                            Text(
-                                text  = if (seconds >= 0) "Closes in ${formatCountdown(seconds)}" else "Tap to open receive window",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = if (receiveActive && seconds <= 30)
-                                    MaterialTheme.colorScheme.error
-                                else
-                                    LocalContentColor.current.copy(alpha = 0.7f),
-                            )
-                        }
+                        Text(
+                            text  = if (receiveActive)
+                                "Open — closes when the transfer finishes"
+                            else
+                                "Tap to open receive window",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = LocalContentColor.current.copy(alpha = 0.7f),
+                        )
                     }
                     Switch(
                         checked         = receiveActive,
@@ -152,20 +142,14 @@ fun HomeScreen(
                     )
                 }
 
-                // Linear countdown bar — only shown while window is active.
+                // Indeterminate activity bar — shown while the window is open.
                 if (receiveActive) {
-                    val progress = receiveState.remainingSeconds.toFloat() /
-                            ReceiveForegroundService.DEFAULT_WINDOW_SEC.toFloat()
                     LinearProgressIndicator(
-                        progress        = { progress },
                         modifier        = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp)
                             .padding(bottom = 12.dp),
-                        color           = if (receiveState.remainingSeconds <= 30)
-                            MaterialTheme.colorScheme.error
-                        else
-                            MaterialTheme.colorScheme.primary,
+                        color           = MaterialTheme.colorScheme.primary,
                         trackColor      = MaterialTheme.colorScheme.surfaceVariant,
                     )
                 }
@@ -200,13 +184,6 @@ fun HomeScreen(
             }
         }
     }
-}
-
-/** Formats seconds as "4:59" style countdown string. */
-private fun formatCountdown(totalSeconds: Int): String {
-    val min = totalSeconds / 60
-    val sec = totalSeconds % 60
-    return if (min > 0) "%d:%02d".format(min, sec) else "${sec}s"
 }
 
 private fun startReceiveWindow(context: Context) {

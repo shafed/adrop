@@ -48,14 +48,21 @@ class ReceiveForegroundService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var windowJob: Job? = null
-    private var timerJob: Job? = null
-    private var remainingSeconds = DEFAULT_WINDOW_SEC
     private var mdnsManager: MdnsManager? = null
 
     // Number of transfers currently being received. The receive window will not
-    // close while this is > 0, so an in-flight transfer is never cut off when
-    // the 5-minute window expires.
+    // close while this is > 0, so an in-flight transfer is never cut off.
     private val activeTransfers = AtomicInteger(0)
+
+    // Whether at least one transfer has been accepted during this window. Once a
+    // transfer has run, the window closes as soon as none remain active (instead
+    // of waiting out the idle grace period).
+    private var sawTransfer = false
+
+    // Wall-clock deadline (ms) for the idle grace period: if no transfer has
+    // arrived by then, the window closes on its own. Refreshed each time we
+    // start waiting again with nothing active.
+    private var graceDeadlineMs = 0L
 
     // ---------------------------------------------------------------------------
     // Lifecycle
@@ -81,9 +88,10 @@ class ReceiveForegroundService : Service() {
     // ---------------------------------------------------------------------------
 
     private fun startWindow() {
-        remainingSeconds = DEFAULT_WINDOW_SEC
-        startForeground(NOTIFICATION_ID_SERVICE, buildServiceNotification(remainingSeconds))
-        ReceiveWindowState.onStarted(remainingSeconds)
+        sawTransfer = false
+        graceDeadlineMs = System.currentTimeMillis() + GRACE_SEC * 1_000L
+        startForeground(NOTIFICATION_ID_SERVICE, buildServiceNotification())
+        ReceiveWindowState.onStarted()
 
         val trustRepo = TrustRepository.getInstance(applicationContext)
         mdnsManager = MdnsManager(applicationContext, trustRepo).also { m ->
@@ -105,26 +113,6 @@ class ReceiveForegroundService : Service() {
                 stopSelf()
             }
         }
-
-        // Countdown timer — updates notification and in-process state every second.
-        // The countdown pauses while a transfer is in progress so the window can
-        // never expire mid-transfer.
-        timerJob = scope.launch {
-            while (remainingSeconds > 0) {
-                delay(1_000)
-                if (activeTransfers.get() > 0) {
-                    // A transfer is running: hold the clock and show "Receiving…".
-                    updateServiceNotification(remainingSeconds)
-                    continue
-                }
-                remainingSeconds--
-                ReceiveWindowState.onTick(remainingSeconds)
-                // Update notification every 5 s to reduce churn, but always on last 10 s.
-                if (remainingSeconds % 5 == 0 || remainingSeconds <= 10) {
-                    updateServiceNotification(remainingSeconds)
-                }
-            }
-        }
     }
 
     private fun stopWindow() {
@@ -134,7 +122,6 @@ class ReceiveForegroundService : Service() {
         }
         mdnsManager = null
         windowJob?.cancel()
-        timerJob?.cancel()
         ReceiveWindowState.onStopped()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -159,33 +146,39 @@ class ReceiveForegroundService : Service() {
         Log.i(TAG, "listening on $listenAddr")
 
         serverSocket.use { ss ->
-            // Poll the accept loop on a short interval so we can re-check the
-            // window deadline frequently. The window only closes once the
-            // countdown has elapsed AND no transfer is in progress, so a
-            // transfer that starts before expiry runs to completion.
+            // Poll accept() on a short interval so we can re-check the close
+            // condition frequently. The window closes when no transfer is active
+            // AND either a transfer has already completed (close right after the
+            // last one finishes) or the idle grace period elapsed with none
+            // arriving. An in-flight transfer always keeps the window open.
             ss.soTimeout = ACCEPT_POLL_MS
 
             while (isActive) {
-                if (remainingSeconds <= 0 && activeTransfers.get() == 0) break
+                if (activeTransfers.get() == 0 && shouldClose()) break
                 try {
                     val client = ss.accept() as SSLSocket
                     // Count the connection as active immediately — before the TLS
-                    // handshake — so a connection accepted just before the deadline
+                    // handshake — so a connection accepted right at the deadline
                     // can't be torn down in the gap before handleClient marks it.
                     activeTransfers.incrementAndGet()
+                    sawTransfer = true
+                    updateServiceNotification()
                     // Handle each connection in a child coroutine so we can accept the next.
                     launch {
                         try {
                             handleClient(client, trustRepo, identity)
                         } finally {
+                            // Last active transfer just finished: refresh the
+                            // notification so the next poll closes the window.
                             activeTransfers.decrementAndGet()
+                            updateServiceNotification()
                         }
                     }
                 } catch (e: SocketException) {
                     if (!isActive) break    // normal shutdown
                     Log.w(TAG, "accept error: ${e.message}")
                 } catch (e: java.net.SocketTimeoutException) {
-                    // Poll tick: loop back and re-check the window deadline.
+                    // Poll tick: loop back and re-check the close condition.
                 }
             }
         }
@@ -193,6 +186,14 @@ class ReceiveForegroundService : Service() {
         // transfer still in flight here runs to completion before teardown.
         Log.i(TAG, "receive window closed")
     }
+
+    /**
+     * Whether the receive window should close now (only consulted when no
+     * transfer is active). Closes immediately once a transfer has completed;
+     * otherwise waits out the idle grace period for a transfer to arrive.
+     */
+    private fun shouldClose(): Boolean =
+        sawTransfer || System.currentTimeMillis() >= graceDeadlineMs
 
     private suspend fun handleClient(
         socket: SSLSocket,
@@ -394,7 +395,7 @@ class ReceiveForegroundService : Service() {
         )
     }
 
-    private fun buildServiceNotification(remainingSec: Int): Notification {
+    private fun buildServiceNotification(): Notification {
         val stopIntent = Intent(this, ReceiveForegroundService::class.java)
             .setAction(ACTION_STOP)
         val stopPi = PendingIntent.getService(
@@ -402,13 +403,10 @@ class ReceiveForegroundService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val active = activeTransfers.get()
-        val text = if (active > 0) {
-            if (active == 1) "Receiving a transfer…" else "Receiving $active transfers…"
-        } else {
-            val min = remainingSec / 60
-            val sec = remainingSec % 60
-            val timeStr = if (min > 0) "${min}m ${sec}s" else "${sec}s"
-            "Listening for transfers — $timeStr remaining"
+        val text = when {
+            active == 1 -> "Receiving a transfer…"
+            active > 1  -> "Receiving $active transfers…"
+            else        -> "Ready to receive"
         }
 
         return NotificationCompat.Builder(this, CHANNEL_SERVICE)
@@ -420,9 +418,9 @@ class ReceiveForegroundService : Service() {
             .build()
     }
 
-    private fun updateServiceNotification(remainingSec: Int) {
+    private fun updateServiceNotification() {
         val nm = getSystemService(NotificationManager::class.java) ?: return
-        nm.notify(NOTIFICATION_ID_SERVICE, buildServiceNotification(remainingSec))
+        nm.notify(NOTIFICATION_ID_SERVICE, buildServiceNotification())
     }
 
     // ---------------------------------------------------------------------------
@@ -435,7 +433,11 @@ class ReceiveForegroundService : Service() {
         const val CHANNEL_SERVICE      = "adrop_receive_window"
         const val NOTIFICATION_ID_SERVICE = 100
         const val LISTEN_PORT          = 7777
-        const val DEFAULT_WINDOW_SEC   = 300  // 5 minutes
+        // Idle grace period: how long the window stays open waiting for the
+        // first transfer to arrive. Once any transfer completes the window
+        // closes immediately regardless of this. Sized to comfortably cover an
+        // FCM-wake round-trip (the daemon retries ~10s after waking the phone).
+        const val GRACE_SEC            = 60
         const val ACCEPT_POLL_MS       = 1_000 // accept() poll interval
 
         const val ACTION_START = "com.adrop.RECEIVE_START"

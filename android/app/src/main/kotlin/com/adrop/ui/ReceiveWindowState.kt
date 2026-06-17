@@ -17,8 +17,6 @@ import kotlinx.coroutines.flow.asStateFlow
 data class ReceiveWindowUiState(
     /** True while the foreground service is running. */
     val isRunning: Boolean = false,
-    /** Seconds remaining in the receive window (0 when not running). */
-    val remainingSeconds: Int = 0,
     /** Non-null when the receive window ended due to an error. */
     val lastError: String? = null,
 )
@@ -28,27 +26,18 @@ object ReceiveWindowState {
     val stateFlow: StateFlow<ReceiveWindowUiState> = _flow.asStateFlow()
 
     /** Called by ReceiveForegroundService when the window opens. */
-    internal fun onStarted(totalSeconds: Int) {
-        _flow.value = ReceiveWindowUiState(
-            isRunning        = true,
-            remainingSeconds = totalSeconds,
-            lastError        = null,
-        )
-    }
-
-    /** Called every second by the countdown timer in ReceiveForegroundService. */
-    internal fun onTick(remainingSeconds: Int) {
-        _flow.value = _flow.value.copy(remainingSeconds = remainingSeconds)
+    internal fun onStarted() {
+        _flow.value = ReceiveWindowUiState(isRunning = true, lastError = null)
     }
 
     /** Called by ReceiveForegroundService when the window closes normally. */
     internal fun onStopped() {
-        _flow.value = ReceiveWindowUiState(isRunning = false, remainingSeconds = 0)
+        _flow.value = ReceiveWindowUiState(isRunning = false)
     }
 
     /** Called by ReceiveForegroundService when the window closes due to an error. */
     internal fun onError(message: String) {
-        _flow.value = ReceiveWindowUiState(isRunning = false, remainingSeconds = 0, lastError = message)
+        _flow.value = ReceiveWindowUiState(isRunning = false, lastError = message)
     }
 
     /** Called by the UI once it has consumed the error so it isn't shown again. */
