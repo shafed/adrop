@@ -71,16 +71,25 @@ func (c *Client) Send(ctx context.Context, registrationToken string, data map[st
 		return err
 	}
 
+	// android.priority=high asks FCM to deliver immediately and wake the app
+	// even when it is in the background / Doze. Without it, data-only messages
+	// can be deferred indefinitely or dropped when the app has been stopped —
+	// which defeats the wake-on-send purpose, especially on aggressive OEMs.
+	type androidConfig struct {
+		Priority string `json:"priority"`
+	}
 	type fcmMessage struct {
-		Token string            `json:"token"`
-		Data  map[string]string `json:"data"`
+		Token   string            `json:"token"`
+		Data    map[string]string `json:"data"`
+		Android androidConfig     `json:"android"`
 	}
 	type fcmRequest struct {
 		Message fcmMessage `json:"message"`
 	}
 	body, err := json.Marshal(fcmRequest{Message: fcmMessage{
-		Token: registrationToken,
-		Data:  data,
+		Token:   registrationToken,
+		Data:    data,
+		Android: androidConfig{Priority: "high"},
 	}})
 	if err != nil {
 		return err

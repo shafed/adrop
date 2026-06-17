@@ -1,5 +1,6 @@
 # Build output
 /adrop
+/adrop-relay
 
 # Go
 *.exe
@@ -20,6 +21,10 @@ android/local.properties
 *.apk
 *.aab
 *.keystore
+
+# Firebase / FCM credentials — NEVER commit (contain keys / project secrets)
+google-services.json
+*-firebase-adminsdk-*.json
 
 # Editor / OS
 .idea/

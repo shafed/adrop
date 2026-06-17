@@ -36,7 +36,9 @@ android {
             )
         }
         debug {
-            applicationIdSuffix = ".debug"
+            // No applicationIdSuffix: keep package == com.adrop so the single
+            // google-services.json (registered for com.adrop) matches both
+            // debug and release builds.
             isDebuggable = true
         }
     }
