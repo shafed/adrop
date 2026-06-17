@@ -42,25 +42,12 @@ func TestResumeTransfer(t *testing.T) {
 	const alreadyDone = int64(proto.ChunkSize)
 	partPath := filepath.Join(phone.download, "bigfile.bin.adrop-part")
 	mustWrite(t, partPath, payload[:alreadyDone])
-	_ = sha // suppress unused warning; SHA is used by the sender in the manifest
+	_ = sha // SHA is embedded in the manifest by buildManifest; no need to pass explicitly.
 
-	// Capture per-file progress callbacks to verify bytes skipped.
-	var mu sync.Mutex
-	var firstBytesDone int64 = -1
-	progress := func(line string) {}
-	_ = progress
-
-	// Send the file; resume handshake happens automatically.
-	var progressCalls []int64
-	if err := pc.d.SendFiles(ctx, "phone", []string{src}, func(line string) {
-		// human-readable lines — not used for assertion here
-		_ = line
-	}); err != nil {
+	// Send the file; resume handshake happens automatically (Resume=true in SessionStart).
+	if err := pc.d.SendFiles(ctx, "phone", []string{src}, nil); err != nil {
 		t.Fatalf("SendFiles: %v", err)
 	}
-	_ = mu
-	_ = firstBytesDone
-	_ = progressCalls
 
 	// The final file must be complete and match the original payload.
 	assertFileEqual(t, filepath.Join(phone.download, "bigfile.bin"), payload)
