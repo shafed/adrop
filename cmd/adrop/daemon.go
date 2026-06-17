@@ -30,6 +30,7 @@ func runDaemon(args []string) error {
 		Port:        port,
 		AdvertiseIP: os.Getenv("ADROP_ADVERTISE_IP"),
 		DownloadDir: os.Getenv("ADROP_DOWNLOAD_DIR"),
+		RelayAddr:   os.Getenv("ADROP_RELAY"),
 		Logger:      log.New(os.Stderr, "adrop: ", log.LstdFlags),
 	})
 	if err != nil {

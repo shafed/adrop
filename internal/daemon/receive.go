@@ -69,6 +69,8 @@ func (d *Daemon) handlePeer(ctx context.Context, raw net.Conn) {
 	// didn't name a concrete host. This corrects a stale/wrong stored port
 	// (e.g. after a DHCP change) on every inbound connect.
 	d.store.UpdateAddr(fp, d.resolvePeerAddr(hello.Addr, conn.RemoteAddr()))
+	// Persist the peer's FCM token so we can wake it later if direct dial fails.
+	d.store.UpdateFcmToken(fp, hello.FcmToken)
 
 	if err := d.receiveSession(ctx, conn, peerName); err != nil {
 		d.logger.Printf("receive from %s: %v", peerName, err)

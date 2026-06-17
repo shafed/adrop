@@ -96,6 +96,10 @@ type Header struct {
 	// connection records a dialable address rather than our ephemeral source
 	// port.
 	Addr string `json:"addr,omitempty"`
+	// FcmToken is the Firebase Cloud Messaging registration token of the
+	// sending device. Android sends this in Hello so the PC can wake it via
+	// FCM when a subsequent direct dial fails. Old peers ignore unknown fields.
+	FcmToken string `json:"fcm_token,omitempty"`
 
 	// SessionStart
 	Kind   SessionKind `json:"kind,omitempty"`

@@ -17,6 +17,7 @@ import androidx.lifecycle.viewModelScope
 import com.adrop.data.identity.IdentityStore
 import com.adrop.data.proto.*
 import com.adrop.data.trust.TrustedDevice
+import com.adrop.feature.fcm.FcmTokenStore
 import com.adrop.data.trust.TrustRepository
 import com.adrop.net.session.ProgressFn
 import com.adrop.net.session.*
@@ -219,13 +220,14 @@ class SendViewModel(
             val out = s.outputStream.buffered()
             val inp = s.inputStream.buffered()
 
-            // Hello exchange.
+            // Hello exchange — include FCM token so PC can wake us next time.
             writeControl(out, Header(
                 type        = MsgType.HELLO,
                 version     = PROTOCOL_VERSION,
                 fingerprint = identity.fingerprint,
                 name        = android.os.Build.MODEL,
                 addr        = "${localLanIp()}:${com.adrop.feature.receive.ReceiveForegroundService.LISTEN_PORT}",
+                fcmToken    = FcmTokenStore.load(context),
             ))
             readHeader(inp)  // their hello
 
@@ -255,6 +257,7 @@ class SendViewModel(
                 fingerprint = identity.fingerprint,
                 name        = android.os.Build.MODEL,
                 addr        = "${localLanIp()}:${com.adrop.feature.receive.ReceiveForegroundService.LISTEN_PORT}",
+                fcmToken    = FcmTokenStore.load(context),
             ))
             readHeader(inp)
 

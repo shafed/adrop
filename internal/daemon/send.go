@@ -1,16 +1,20 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/shafed/adrop/internal/config"
 	"github.com/shafed/adrop/internal/proto"
@@ -25,6 +29,10 @@ type fileProgressFn func(fileIndex int, bytesDone, totalBytes int64)
 
 // dialPeer resolves a target (name or fingerprint prefix), dials it, performs
 // the Hello exchange, and returns the open connection.
+//
+// If the initial dial fails and the target has a known FCM token and a relay
+// address is configured, dialPeer sends a wake request to the relay (asking
+// the phone to open its receive window) and retries once after a short wait.
 func (d *Daemon) dialPeer(target string) (*tls.Conn, config.Device, error) {
 	dev, ok := d.store.Lookup(target)
 	if !ok {
@@ -32,7 +40,20 @@ func (d *Daemon) dialPeer(target string) (*tls.Conn, config.Device, error) {
 	}
 	conn, fp, err := transport.Dial(dev.Addr, d.store.Certificate(), d)
 	if err != nil {
-		return nil, dev, fmt.Errorf("dial %s (%s): %w", dev.Name, dev.Addr, err)
+		// Attempt FCM wake if we have the token and a relay is configured.
+		if dev.FcmToken != "" && d.relayAddr != "" {
+			d.logger.Printf("dial %s failed (%v); sending FCM wake via relay", dev.Name, err)
+			if wakeErr := d.wakeViRelay(dev); wakeErr != nil {
+				d.logger.Printf("FCM wake failed: %v", wakeErr)
+			} else {
+				d.logger.Printf("FCM wake sent; waiting 10s for phone to open receive window…")
+				time.Sleep(10 * time.Second)
+				conn, fp, err = transport.Dial(dev.Addr, d.store.Certificate(), d)
+			}
+		}
+		if err != nil {
+			return nil, dev, fmt.Errorf("dial %s (%s): %w", dev.Name, dev.Addr, err)
+		}
 	}
 	if fp != dev.Fingerprint {
 		conn.Close()
@@ -54,6 +75,38 @@ func (d *Daemon) dialPeer(target string) (*tls.Conn, config.Device, error) {
 		return nil, dev, err
 	}
 	return conn, dev, nil
+}
+
+// wakeViRelay POSTs a wake request to the configured relay server, which
+// forwards an FCM push to the target device's registration token.
+func (d *Daemon) wakeViRelay(dev config.Device) error {
+	type wakeRequest struct {
+		Fingerprint string `json:"fingerprint"`
+		Sender      string `json:"sender"`
+		FCMToken    string `json:"fcm_token"`
+	}
+	body, _ := json.Marshal(wakeRequest{
+		Fingerprint: dev.Fingerprint,
+		Sender:      d.name,
+		FCMToken:    dev.FcmToken,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.relayAddr+"/wake", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("relay: status %d: %s", resp.StatusCode, string(b))
+	}
+	return nil
 }
 
 // SendFiles transfers files to target as a single session. Each file's

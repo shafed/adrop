@@ -1,5 +1,6 @@
 plugins {
     alias(libs.plugins.android.application)
+    alias(libs.plugins.google.services)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
@@ -62,6 +63,10 @@ android {
 }
 
 dependencies {
+    // Firebase (BOM manages versions; only messaging needed for FCM wake)
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.messaging)
+
     // Core
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)

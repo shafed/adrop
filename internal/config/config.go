@@ -38,6 +38,11 @@ type Device struct {
 	Addr string `json:"addr"`
 	// PairedAt records when the device was added.
 	PairedAt time.Time `json:"paired_at"`
+	// FcmToken is the Firebase Cloud Messaging registration token for this
+	// device, if it is an Android phone. Updated each time the peer sends a
+	// Hello with a non-empty FcmToken field. Used to wake the phone when a
+	// direct dial fails (e.g. phone is on a different network).
+	FcmToken string `json:"fcm_token,omitempty"`
 }
 
 // Store holds this device's identity plus the trusted-device list and
@@ -276,6 +281,24 @@ func (s *Store) UpdateAddr(fingerprint, addr string) {
 		if s.devices[i].Fingerprint == fingerprint {
 			if s.devices[i].Addr != addr {
 				s.devices[i].Addr = addr
+				_ = s.saveDevicesLocked()
+			}
+			return
+		}
+	}
+}
+
+// UpdateFcmToken stores the FCM registration token for a fingerprint, if present.
+func (s *Store) UpdateFcmToken(fingerprint, token string) {
+	if token == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.devices {
+		if s.devices[i].Fingerprint == fingerprint {
+			if s.devices[i].FcmToken != token {
+				s.devices[i].FcmToken = token
 				_ = s.saveDevicesLocked()
 			}
 			return

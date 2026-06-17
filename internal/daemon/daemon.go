@@ -30,6 +30,12 @@ type Daemon struct {
 	listenIP string // bind address for the TLS listener ("" = all)
 	port     int
 
+	// relayAddr is the base URL of an adrop-relay server (e.g.
+	// "http://relay.example.com:8080"). When non-empty and a direct dial
+	// fails, the daemon POSTs a wake request to the relay so the phone opens
+	// its receive window via FCM, then retries the dial.
+	relayAddr string
+
 	logger *log.Logger
 
 	// pairWindow, when non-nil, allows the next inbound connection from an
@@ -53,7 +59,11 @@ type Options struct {
 	AdvertiseIP string // LAN IP to advertise in pairing; auto-detected if ""
 	ListenIP    string // bind address for the TLS listener ("" = all interfaces)
 	DownloadDir string // where received files land; defaults to ~/Downloads
-	Logger      *log.Logger
+	// RelayAddr is the base URL of an adrop-relay server. When set, a failed
+	// direct dial triggers an FCM wake via the relay before retrying once.
+	// Reads from env ADROP_RELAY if empty. Example: "http://relay.example.com:8080"
+	RelayAddr string
+	Logger    *log.Logger
 
 	// ClipboardSet/Get override the system clipboard (used in tests). When nil
 	// the wl-clipboard-backed defaults are used.
@@ -90,12 +100,17 @@ func New(opt Options) (*Daemon, error) {
 	if ip == "" {
 		ip = detectLANIP()
 	}
+	relay := opt.RelayAddr
+	if relay == "" {
+		relay = os.Getenv("ADROP_RELAY")
+	}
 	d := &Daemon{
 		store:        opt.Store,
 		name:         name,
 		port:         port,
 		listenIP:     opt.ListenIP,
 		tcpAddr:      net.JoinHostPort(ip, fmt.Sprint(port)),
+		relayAddr:    relay,
 		logger:       logger,
 		downloadDir:  dl,
 		clipboardSet: opt.ClipboardSet,
