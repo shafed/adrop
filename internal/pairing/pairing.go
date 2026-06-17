@@ -37,8 +37,8 @@ type Payload struct {
 }
 
 // Encode builds the "adrop://pair?d=..." URI for a payload. Version 2 uses a
-// compact binary payload to keep terminal QR codes small. Decode still accepts
-// the legacy version-1 JSON/PEM payload for existing pairing URIs.
+// compact binary payload. Decode still accepts the legacy version-1 JSON/PEM
+// payload for existing pairing URIs.
 func Encode(p Payload) (string, error) {
 	if p.Version == 0 {
 		p.Version = compactPayloadVersion
@@ -171,14 +171,14 @@ func short(s string) string {
 // with a dark-on-light or light-on-dark scheme. It uses half-block characters
 // so the code stays roughly square in typical fonts.
 func RenderTerminal(uri string) (string, error) {
-	code, err := qr.Encode(uri, qr.L)
+	code, err := qr.Encode(uri, qr.M)
 	if err != nil {
 		return "", err
 	}
 	size := code.Size
 	var b strings.Builder
 	// Quiet zone + two rows per text line using upper/lower half blocks.
-	const quiet = 1
+	const quiet = 2
 	dim := size + quiet*2
 	at := func(x, y int) bool {
 		if x < quiet || y < quiet || x >= size+quiet || y >= size+quiet {
@@ -208,7 +208,7 @@ func RenderTerminal(uri string) (string, error) {
 
 // RenderPNG returns PNG bytes for the URI (used by a GUI/window renderer).
 func RenderPNG(uri string) ([]byte, error) {
-	code, err := qr.Encode(uri, qr.L)
+	code, err := qr.Encode(uri, qr.M)
 	if err != nil {
 		return nil, err
 	}
