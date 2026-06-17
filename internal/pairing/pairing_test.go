@@ -1,6 +1,8 @@
 package pairing
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -31,6 +33,59 @@ func TestEncodeDecodeRoundtrip(t *testing.T) {
 	}
 	if got.Fingerprint != p.Fingerprint || got.Addr != p.Addr || got.Name != p.Name {
 		t.Fatalf("mismatch: %+v", got)
+	}
+}
+
+func TestDecodeLegacyJSONPayload(t *testing.T) {
+	store, err := config.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := Payload{
+		Version:     1,
+		Name:        "pc",
+		Fingerprint: store.Fingerprint(),
+		CertPEM:     string(store.CertPEM()),
+		Addr:        "192.168.1.5:53127",
+	}
+	raw, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uri := URIScheme + base64.RawURLEncoding.EncodeToString(raw)
+	got, err := Decode(uri)
+	if err != nil {
+		t.Fatalf("decode legacy: %v", err)
+	}
+	if got.Fingerprint != p.Fingerprint || got.Addr != p.Addr || got.Name != p.Name {
+		t.Fatalf("mismatch: %+v", got)
+	}
+}
+
+func TestCompactEncodeIsSmallerThanLegacyJSON(t *testing.T) {
+	store, err := config.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := Payload{
+		Version:     2,
+		Name:        "pc",
+		Fingerprint: store.Fingerprint(),
+		CertPEM:     string(store.CertPEM()),
+		Addr:        "192.168.1.5:53127",
+	}
+	compactURI, err := Encode(p)
+	if err != nil {
+		t.Fatalf("encode compact: %v", err)
+	}
+	p.Version = 1
+	legacyRaw, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyURI := URIScheme + base64.RawURLEncoding.EncodeToString(legacyRaw)
+	if len(compactURI) >= len(legacyURI) {
+		t.Fatalf("compact URI length %d >= legacy length %d", len(compactURI), len(legacyURI))
 	}
 }
 

@@ -35,7 +35,7 @@ func renderQR(uri string) (string, error) {
 // PairingURI builds this device's pairing payload + URI (for QR rendering).
 func (d *Daemon) PairingURI() (string, error) {
 	p := pairing.Payload{
-		Version:     1,
+		Version:     2,
 		Name:        d.name,
 		Fingerprint: d.store.Fingerprint(),
 		CertPEM:     string(d.store.CertPEM()),

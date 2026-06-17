@@ -1,11 +1,14 @@
 /**
  * Pairing QR decoder.
  *
- * The QR text is: adrop://pair?d=<base64url-no-padding>
- * where the base64url payload decodes to JSON:
+ * The QR text is: adrop://pair?d=<base64url-no-padding>. Current payloads are
+ * compact binary version 2:
+ *   [version=2][nameLen][name][addrLen][addr][32-byte fp][2-byte certLen][cert DER]
+ *
+ * Legacy version-1 payloads are still accepted. They decode to JSON:
  *   {"v":1,"n":<name>,"fp":<hex sha256>,"cert":<PEM string>,"addr":<host:port>}
  *
- * Anti-tamper: we parse the PEM cert, compute SHA-256 of its DER bytes, and
+ * Anti-tamper: we parse the cert, compute SHA-256 of its DER bytes, and
  * confirm it equals "fp". Reject on mismatch.
  *
  * This mirrors internal/pairing/pairing.go on the Go side.
@@ -49,12 +52,20 @@ fun decodePairingUri(uri: String): PairingPayload {
     val encoded = uri.removePrefix(URI_SCHEME)
 
     // base64url, no padding (matches Go's base64.RawURLEncoding)
-    val jsonBytes = try {
+    val payloadBytes = try {
         Base64.decode(encoded, Base64.URL_SAFE or Base64.NO_PADDING)
     } catch (e: Exception) {
         throw PairingException("base64url decode failed: ${e.message}", e)
     }
 
+    return if (payloadBytes.firstOrNull()?.toInt() == '{'.code) {
+        decodeJsonPayload(payloadBytes)
+    } else {
+        decodeCompactPayload(payloadBytes)
+    }
+}
+
+private fun decodeJsonPayload(jsonBytes: ByteArray): PairingPayload {
     val json = try {
         JSONObject(String(jsonBytes, Charsets.UTF_8))
     } catch (e: Exception) {
@@ -84,6 +95,58 @@ fun decodePairingUri(uri: String): PairingPayload {
         throw PairingException("failed to decode PEM cert: ${e.message}", e)
     }
 
+    return validatePayload(version, name, fingerprint, certDer, certPem, addr)
+}
+
+private fun decodeCompactPayload(payloadBytes: ByteArray): PairingPayload {
+    var index = 0
+    fun takeByte(label: String): Int {
+        if (index >= payloadBytes.size) throw PairingException("compact payload missing $label")
+        return payloadBytes[index++].toInt() and 0xFF
+    }
+    fun takeBytes(count: Int, label: String): ByteArray {
+        if (count <= 0 || index + count > payloadBytes.size) {
+            throw PairingException("compact payload bad $label")
+        }
+        return payloadBytes.copyOfRange(index, index + count).also {
+            index += count
+        }
+    }
+    fun takeString(label: String): String {
+        val len = takeByte("$label length")
+        return takeBytes(len, label).toString(Charsets.UTF_8)
+    }
+
+    val version = takeByte("version")
+    if (version != 2) throw PairingException("unsupported compact pairing version: $version")
+
+    val name = takeString("device name")
+    val addr = takeString("addr")
+    val fingerprint = takeBytes(32, "fingerprint")
+        .joinToString("") { "%02x".format(it.toInt() and 0xFF) }
+    if (index + 2 > payloadBytes.size) throw PairingException("compact payload missing cert length")
+    val certLen = ((payloadBytes[index].toInt() and 0xFF) shl 8) or
+        (payloadBytes[index + 1].toInt() and 0xFF)
+    index += 2
+    val certDer = takeBytes(certLen, "cert")
+    if (index != payloadBytes.size) throw PairingException("compact payload has trailing bytes")
+
+    return validatePayload(version, name, fingerprint, certDer, certPemFromDer(certDer), addr)
+}
+
+private fun validatePayload(
+    version: Int,
+    name: String,
+    fingerprint: String,
+    certDer: ByteArray,
+    certPem: String,
+    addr: String,
+): PairingPayload {
+    if (name.isBlank())        throw PairingException("missing device name in pairing payload")
+    if (fingerprint.isBlank()) throw PairingException("missing fingerprint in pairing payload")
+    if (certDer.isEmpty())     throw PairingException("missing cert in pairing payload")
+    if (addr.isBlank())        throw PairingException("missing addr in pairing payload")
+
     // Also parse as X509 to make sure it's a valid cert.
     try {
         val cf = CertificateFactory.getInstance("X.509")
@@ -94,7 +157,7 @@ fun decodePairingUri(uri: String): PairingPayload {
 
     val computedFp = MessageDigest.getInstance("SHA-256")
         .digest(certDer)
-        .joinToString("") { "%02x".format(it) }
+        .joinToString("") { "%02x".format(it.toInt() and 0xFF) }
 
     if (!computedFp.equals(fingerprint, ignoreCase = true)) {
         throw PairingException(
@@ -110,6 +173,13 @@ fun decodePairingUri(uri: String): PairingPayload {
         certPem     = certPem,
         addr        = addr,
     )
+}
+
+private fun certPemFromDer(certDer: ByteArray): String {
+    val body = Base64.encodeToString(certDer, Base64.NO_WRAP)
+        .chunked(64)
+        .joinToString("\n")
+    return "-----BEGIN CERTIFICATE-----\n$body\n-----END CERTIFICATE-----\n"
 }
 
 /**
