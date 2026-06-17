@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=adrop
+Comment=Send files to paired devices
+Exec=adrop gui
+Icon=network-wireless
+Terminal=false
+Categories=Network;FileTransfer;

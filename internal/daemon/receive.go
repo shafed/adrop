@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/shafed/adrop/internal/ipc"
 	"github.com/shafed/adrop/internal/notify"
 	"github.com/shafed/adrop/internal/proto"
 )
@@ -142,11 +143,19 @@ func (d *Daemon) receiveFilesWithProgress(ctx context.Context, conn *tls.Conn, p
 	if len(manifest) == 0 {
 		return fmt.Errorf("empty file manifest")
 	}
+	count := len(manifest)
+	d.broadcast(ipc.Event{Kind: "recv-start", Peer: peerName, Count: count})
+	// emitErr broadcasts a recv-error before returning; wrap the error returns
+	// below so the GUI feed reflects failures (notifications are unchanged).
+	emitErr := func(err error) error {
+		d.broadcast(ipc.Event{Kind: "recv-error", Peer: peerName, Count: count, Err: err.Error()})
+		return err
+	}
 	var saved []string
 	for {
 		hdr, err := proto.ReadHeader(conn)
 		if err != nil {
-			return err
+			return emitErr(err)
 		}
 		if hdr.Type == proto.TypeSessionEnd {
 			break
@@ -159,6 +168,15 @@ func (d *Daemon) receiveFilesWithProgress(ctx context.Context, conn *tls.Conn, p
 				d.logger.Printf("progress: file[%d] %d/%d bytes from %s",
 					hdr.FileIndex, hdr.BytesDone, hdr.TotalBytes, peerName)
 			}
+			file := ""
+			if hdr.FileIndex >= 0 && hdr.FileIndex < len(manifest) {
+				file = manifest[hdr.FileIndex].Name
+			}
+			d.broadcast(ipc.Event{
+				Kind: "recv-progress", Peer: peerName, File: file,
+				Index: hdr.FileIndex, Count: count,
+				BytesDone: hdr.BytesDone, Total: hdr.TotalBytes,
+			})
 			continue
 		}
 		// TypeResumeQuery: sender asks how many bytes of this file we already have.
@@ -176,10 +194,10 @@ func (d *Daemon) receiveFilesWithProgress(ctx context.Context, conn *tls.Conn, p
 			continue
 		}
 		if hdr.Type != proto.TypeFileHeader {
-			return fmt.Errorf("expected file_header, got %s", hdr.Type)
+			return emitErr(fmt.Errorf("expected file_header, got %s", hdr.Type))
 		}
 		if hdr.FileIndex < 0 || hdr.FileIndex >= len(manifest) {
-			return fmt.Errorf("file index %d out of range", hdr.FileIndex)
+			return emitErr(fmt.Errorf("file index %d out of range", hdr.FileIndex))
 		}
 		meta := manifest[hdr.FileIndex]
 		var resumeOffset int64
@@ -191,19 +209,24 @@ func (d *Daemon) receiveFilesWithProgress(ctx context.Context, conn *tls.Conn, p
 			_ = proto.WriteControl(conn, proto.Header{
 				Type: proto.TypeAck, FileIndex: hdr.FileIndex, OK: false, Error: err.Error(),
 			})
-			return fmt.Errorf("file %q: %w", meta.Name, err)
+			return emitErr(fmt.Errorf("file %q: %w", meta.Name, err))
 		}
 		saved = append(saved, path)
 		_ = proto.WriteControl(conn, proto.Header{
 			Type: proto.TypeAck, FileIndex: hdr.FileIndex, OK: true,
 		})
 		d.logger.Printf("received %s (%d bytes) from %s", filepath.Base(path), meta.Size, peerName)
+		d.broadcast(ipc.Event{
+			Kind: "recv-file-done", Peer: peerName, File: filepath.Base(path),
+			Index: hdr.FileIndex, Count: count, BytesDone: meta.Size, Total: meta.Size,
+		})
 	}
 	_ = proto.WriteControl(conn, proto.Header{Type: proto.TypeAck, OK: true})
 
 	summary := fmt.Sprintf("Received %d file(s) from %s", len(saved), peerName)
 	body := strings.Join(baseNames(saved), ", ")
 	_ = notify.Send(ctx, summary, body)
+	d.broadcast(ipc.Event{Kind: "recv-done", Peer: peerName, Count: len(saved)})
 	return nil
 }
 

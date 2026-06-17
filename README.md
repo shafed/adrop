@@ -44,6 +44,28 @@ Runtime dependencies: `wl-clipboard` (`wl-copy`/`wl-paste`) for clipboard,
 `libnotify` (`notify-send`) for notifications. Neither is required for file
 transfer.
 
+### GUI (optional)
+
+A small drag-drop window for the PC side — drop files onto it to send to the
+last-used (or chosen) peer, paste a `file:///` path, push the clipboard, and
+watch incoming transfers live. It's a thin IPC client of the daemon, exactly
+like the CLI.
+
+```sh
+make build-gui          # CGO_ENABLED=1, builds ./adrop with the GUI subcommand
+make install            # install the binary
+make gui-install        # add the app-menu launcher (~/.local/share/applications)
+adrop gui               # or launch from the app menu
+```
+
+The default `make build` stays static (`CGO_ENABLED=0`) and has **no** GUI/Fyne
+dependency; the GUI is isolated behind a `gui` build tag. The plain binary's
+`adrop gui` prints a hint to rebuild with `make build-gui`.
+
+GUI build dependencies (only for `make build-gui`): a C toolchain plus
+`libgl`/`mesa`, `libxcursor`, `libxrandr`, `libxinerama`, `libxi`, `libxxf86vm`
+dev headers (Fyne's Linux prerequisites).
+
 ## Usage
 
 ```sh
@@ -55,6 +77,7 @@ adrop devices                 # list trusted devices
 adrop revoke <name|fp-prefix> # revoke (untrust) a device
 adrop send <peer> <file...>   # send files (one session) to a peer
 adrop clip <peer> [text]      # push clipboard (or given text) to a peer
+adrop gui                     # open the drag-drop window (GUI builds only)
 ```
 
 `<peer>` is a device name or a fingerprint prefix (≥ 8 hex chars).

@@ -49,6 +49,10 @@ type Daemon struct {
 	clipboardSet func(ctx context.Context, data []byte, mime string) error
 	// clipboardGet reads local clipboard for outgoing push; overridable.
 	clipboardGet func(ctx context.Context, mime string) ([]byte, error)
+
+	// subscribers receive broadcast receive-events (GUI feed). Guarded by subMu.
+	subMu sync.Mutex
+	subs  map[chan ipc.Event]struct{}
 }
 
 // Options configures a Daemon.
@@ -115,6 +119,7 @@ func New(opt Options) (*Daemon, error) {
 		downloadDir:  dl,
 		clipboardSet: opt.ClipboardSet,
 		clipboardGet: opt.ClipboardGet,
+		subs:         make(map[chan ipc.Event]struct{}),
 	}
 	if d.clipboardSet == nil {
 		d.clipboardSet = clipboard.Copy
@@ -248,6 +253,37 @@ func (d *Daemon) startMDNS(ctx context.Context) {
 			d.logger.Printf("mdns: browse: %v", err)
 		}
 	}()
+}
+
+// subscribe registers a new receive-event channel and returns it along with an
+// unsubscribe func. The channel is buffered so a momentarily-busy subscriber
+// doesn't stall broadcast; broadcast drops events when the buffer is full.
+func (d *Daemon) subscribe() (<-chan ipc.Event, func()) {
+	ch := make(chan ipc.Event, 32)
+	d.subMu.Lock()
+	d.subs[ch] = struct{}{}
+	d.subMu.Unlock()
+	return ch, func() {
+		d.subMu.Lock()
+		if _, ok := d.subs[ch]; ok {
+			delete(d.subs, ch)
+			close(ch)
+		}
+		d.subMu.Unlock()
+	}
+}
+
+// broadcast delivers e to every subscriber without blocking: a subscriber whose
+// buffer is full simply misses the event rather than stalling a transfer.
+func (d *Daemon) broadcast(e ipc.Event) {
+	d.subMu.Lock()
+	for ch := range d.subs {
+		select {
+		case ch <- e:
+		default:
+		}
+	}
+	d.subMu.Unlock()
 }
 
 // detectLANIP finds a non-loopback IPv4 address to advertise in pairing.

@@ -27,14 +27,28 @@ func SocketPath() string {
 type Command string
 
 const (
-	CmdStatus       Command = "status"        // daemon health + identity
-	CmdPairShow     Command = "pair-show"      // render this device's pairing QR
-	CmdPairAdd      Command = "pair-add"       // trust a scanned/typed peer URI
-	CmdDevices      Command = "devices"        // list trusted devices
-	CmdRevoke       Command = "revoke"         // remove a trusted device
-	CmdSendFiles    Command = "send-files"     // send files to a peer
-	CmdSendClip     Command = "send-clipboard" // push local clipboard to a peer
+	CmdStatus    Command = "status"         // daemon health + identity
+	CmdPairShow  Command = "pair-show"      // render this device's pairing QR
+	CmdPairAdd   Command = "pair-add"       // trust a scanned/typed peer URI
+	CmdDevices   Command = "devices"        // list trusted devices
+	CmdRevoke    Command = "revoke"         // remove a trusted device
+	CmdSendFiles Command = "send-files"     // send files to a peer
+	CmdSendClip  Command = "send-clipboard" // push local clipboard to a peer
+	CmdSubscribe Command = "subscribe"      // long-lived: stream receive events
 )
+
+// Event is a daemon->GUI push on a CmdSubscribe stream. Each Response on that
+// stream carries exactly one Event in Response.Event.
+type Event struct {
+	Kind      string `json:"kind"`  // "recv-start" | "recv-progress" | "recv-file-done" | "recv-done" | "recv-error"
+	Peer      string `json:"peer"`  // sending peer's name
+	File      string `json:"file"`  // basename of the current file (if any)
+	Index     int    `json:"index"` // 0-based file index within the session
+	Count     int    `json:"count"` // total files in the session (if known)
+	BytesDone int64  `json:"bytes_done"`
+	Total     int64  `json:"total"` // total bytes for the current file (if known)
+	Err       string `json:"err,omitempty"`
+}
 
 // Request is a single CLI->daemon command.
 type Request struct {
@@ -71,6 +85,9 @@ type Response struct {
 
 	// Status is populated for the status command.
 	Status *StatusInfo `json:"status,omitempty"`
+
+	// Event is populated on a CmdSubscribe stream (one per Response).
+	Event *Event `json:"event,omitempty"`
 
 	// Done marks the final response for a request.
 	Done bool `json:"done,omitempty"`

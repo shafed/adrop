@@ -42,6 +42,8 @@ func main() {
 		err = runSend(args)
 	case "clip", "clipboard":
 		err = runClip(args)
+	case "gui":
+		err = runGUI(args)
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -68,6 +70,7 @@ Usage:
   adrop revoke <name|fp-prefix> revoke (untrust) a device
   adrop send [<peer>] <file...>  send files to a peer (peer optional after first send)
   adrop clip [<peer>] [text]    push clipboard to a peer (peer optional after first send)
+  adrop gui                     open the drag-drop window (GUI builds only)
 
 Environment:
   ADROP_CONFIG_DIR   override config dir (keys, devices)

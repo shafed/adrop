@@ -134,8 +134,46 @@ func (d *Daemon) handleIPC(ctx context.Context, conn net.Conn) {
 		}
 		send(ipc.Response{Line: "clipboard sent", Done: true})
 
+	case ipc.CmdSubscribe:
+		d.streamEvents(ctx, conn, send)
+
 	default:
 		send(ipc.Response{Err: "unknown command: " + string(req.Cmd), Done: true})
+	}
+}
+
+// streamEvents serves a long-lived CmdSubscribe connection: it registers a
+// subscriber and forwards each broadcast Event as Response{Event: e} until the
+// client disconnects or the daemon shuts down. Unlike every other IPC arm it
+// loops indefinitely and never sets Done (until shutdown).
+func (d *Daemon) streamEvents(ctx context.Context, conn net.Conn, send func(ipc.Response)) {
+	events, unsub := d.subscribe()
+	defer unsub()
+
+	// Detect client disconnect by watching for EOF on the connection. The GUI
+	// never writes on this stream after the initial request, so any read result
+	// (EOF or stray byte) means it's time to stop.
+	gone := make(chan struct{})
+	go func() {
+		var buf [1]byte
+		_, _ = conn.Read(buf[:])
+		close(gone)
+	}()
+
+	for {
+		select {
+		case e, ok := <-events:
+			if !ok {
+				return
+			}
+			ev := e
+			send(ipc.Response{Event: &ev})
+		case <-gone:
+			return
+		case <-ctx.Done():
+			send(ipc.Response{Done: true})
+			return
+		}
 	}
 }
 
