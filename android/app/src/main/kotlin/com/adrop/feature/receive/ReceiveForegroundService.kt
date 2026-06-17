@@ -19,10 +19,12 @@ package com.adrop.feature.receive
 import android.app.*
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.provider.MediaStore
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.adrop.AdropApplication
@@ -30,6 +32,7 @@ import com.adrop.R
 import com.adrop.data.identity.IdentityStore
 import com.adrop.data.proto.*
 import com.adrop.data.trust.TrustRepository
+import com.adrop.net.mdns.MdnsManager
 import com.adrop.net.session.*
 import com.adrop.net.tls.PinningTrustManager
 import com.adrop.net.transport.*
@@ -45,6 +48,7 @@ class ReceiveForegroundService : Service() {
     private var windowJob: Job? = null
     private var timerJob: Job? = null
     private var remainingSeconds = DEFAULT_WINDOW_SEC
+    private var mdnsManager: MdnsManager? = null
 
     // ---------------------------------------------------------------------------
     // Lifecycle
@@ -74,6 +78,15 @@ class ReceiveForegroundService : Service() {
         startForeground(NOTIFICATION_ID_SERVICE, buildServiceNotification(remainingSeconds))
         ReceiveWindowState.onStarted(remainingSeconds)
 
+        val trustRepo = TrustRepository.getInstance(applicationContext)
+        mdnsManager = MdnsManager(applicationContext, trustRepo).also { m ->
+            m.startDiscovery()
+            scope.launch {
+                val identity = IdentityStore.getOrCreate(applicationContext)
+                m.register(Build.MODEL, LISTEN_PORT, identity.fingerprint)
+            }
+        }
+
         windowJob = scope.launch {
             try {
                 openReceiveWindow()
@@ -101,6 +114,11 @@ class ReceiveForegroundService : Service() {
     }
 
     private fun stopWindow() {
+        mdnsManager?.let { m ->
+            m.stopDiscovery()
+            m.unregister()
+        }
+        mdnsManager = null
         windowJob?.cancel()
         timerJob?.cancel()
         ReceiveWindowState.onStopped()
@@ -208,10 +226,75 @@ class ReceiveForegroundService : Service() {
     // ---------------------------------------------------------------------------
 
     private fun handleClipboard(bytes: ByteArray, mime: String, peerName: String) {
+        when (mime) {
+            "image/png", "image/jpeg" -> handleClipboardImage(bytes, mime, peerName)
+            "text/html"               -> handleClipboardHtml(bytes, peerName)
+            else                      -> handleClipboardText(bytes, peerName)
+        }
+        Log.i(TAG, "clipboard set from $peerName mime=$mime (${bytes.size} bytes)")
+    }
+
+    private fun handleClipboardText(bytes: ByteArray, peerName: String) {
         val text = bytes.toString(Charsets.UTF_8)
         val cm = getSystemService(ClipboardManager::class.java)
         cm?.setPrimaryClip(ClipData.newPlainText("adrop from $peerName", text))
-        Log.i(TAG, "clipboard set from $peerName (${bytes.size} bytes)")
+    }
+
+    private fun handleClipboardHtml(bytes: ByteArray, peerName: String) {
+        val html = bytes.toString(Charsets.UTF_8)
+        val cm = getSystemService(ClipboardManager::class.java)
+        cm?.setPrimaryClip(ClipData.newHtmlText("adrop from $peerName", html, html))
+    }
+
+    private fun handleClipboardImage(bytes: ByteArray, mime: String, peerName: String) {
+        val ext = if (mime == "image/png") "png" else "jpg"
+        val fileName = "adrop_${System.currentTimeMillis()}.$ext"
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
+            put(MediaStore.Images.Media.MIME_TYPE, mime)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(MediaStore.Images.Media.IS_PENDING, 1)
+            }
+        }
+        val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        } else {
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        }
+        val resolver = contentResolver
+        val uri = resolver.insert(collection, values) ?: run {
+            Log.e(TAG, "MediaStore insert failed for image from $peerName")
+            return
+        }
+        try {
+            resolver.openOutputStream(uri)!!.use { it.write(bytes) }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val done = ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }
+                resolver.update(uri, done, null, null)
+            }
+            // Post a notification; gallery apps will pick up the new image automatically.
+            postImageNotification(peerName)
+        } catch (e: Exception) {
+            resolver.delete(uri, null, null)
+            Log.e(TAG, "failed to save image from $peerName: ${e.message}")
+        }
+    }
+
+    private fun postImageNotification(peerName: String) {
+        val nm = getSystemService(NotificationManager::class.java) ?: return
+        val openIntent = Intent(this, MainActivity::class.java)
+        val pi = PendingIntent.getActivity(
+            this, 0, openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = NotificationCompat.Builder(this, AdropApplication.CHANNEL_TRANSFERS)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("Image from $peerName")
+            .setContentText("Image copied to Gallery")
+            .setAutoCancel(true)
+            .setContentIntent(pi)
+            .build()
+        nm.notify(System.currentTimeMillis().toInt(), notification)
     }
 
     // ---------------------------------------------------------------------------
@@ -227,7 +310,10 @@ class ReceiveForegroundService : Service() {
                     result.files.joinToString(", ") { it.name }
             }
             is SessionResult.Clipboard -> {
-                val preview = result.bytes.toString(Charsets.UTF_8).take(60)
+                val preview = when {
+                    result.mime.startsWith("image/") -> "Image (${result.bytes.size} bytes)"
+                    else -> result.bytes.toString(Charsets.UTF_8).take(60)
+                }
                 "Clipboard from ${result.peerName}" to preview
             }
         }

@@ -15,6 +15,7 @@ import (
 	"github.com/shafed/adrop/internal/clipboard"
 	"github.com/shafed/adrop/internal/config"
 	"github.com/shafed/adrop/internal/ipc"
+	"github.com/shafed/adrop/internal/mdns"
 	"github.com/shafed/adrop/internal/transport"
 )
 
@@ -41,7 +42,7 @@ type Daemon struct {
 	// clipboardSet writes received clipboard data; overridable in tests.
 	clipboardSet func(ctx context.Context, data []byte, mime string) error
 	// clipboardGet reads local clipboard for outgoing push; overridable.
-	clipboardGet func(ctx context.Context) ([]byte, error)
+	clipboardGet func(ctx context.Context, mime string) ([]byte, error)
 }
 
 // Options configures a Daemon.
@@ -57,7 +58,7 @@ type Options struct {
 	// ClipboardSet/Get override the system clipboard (used in tests). When nil
 	// the wl-clipboard-backed defaults are used.
 	ClipboardSet func(ctx context.Context, data []byte, mime string) error
-	ClipboardGet func(ctx context.Context) ([]byte, error)
+	ClipboardGet func(ctx context.Context, mime string) ([]byte, error)
 }
 
 // New constructs a Daemon from Options.
@@ -104,7 +105,7 @@ func New(opt Options) (*Daemon, error) {
 		d.clipboardSet = clipboard.Copy
 	}
 	if d.clipboardGet == nil {
-		d.clipboardGet = clipboard.Paste
+		d.clipboardGet = clipboard.Get
 	}
 	return d, nil
 }
@@ -170,6 +171,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	d.logger.Printf("listening for peers on %s, IPC at %s", d.tcpAddr, sockPath)
 
+	d.startMDNS(ctx)
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() { defer wg.Done(); d.acceptLoop(ctx, tlsLn, d.handlePeer) }()
@@ -200,6 +203,36 @@ func (d *Daemon) acceptLoop(ctx context.Context, ln net.Listener, handle func(co
 		}
 		go handle(ctx, conn)
 	}
+}
+
+// startMDNS launches avahi-based advertisement and discovery goroutines.
+// If avahi tools are not installed both goroutines log a warning and exit
+// cleanly — the daemon continues without mDNS.
+func (d *Daemon) startMDNS(ctx context.Context) {
+	selfFP := d.store.Fingerprint()
+
+	go func() {
+		if err := mdns.Advertise(ctx, d.name, d.port, selfFP); err != nil {
+			d.logger.Printf("mdns: advertise: %v", err)
+		}
+	}()
+
+	go func() {
+		err := mdns.Browse(ctx, func(name, addr, fp string) {
+			if fp == selfFP {
+				return
+			}
+			peerName, trusted := d.store.IsTrusted(fp)
+			if !trusted {
+				return
+			}
+			d.store.UpdateAddr(fp, addr)
+			d.logger.Printf("mDNS: updated addr for %s to %s", peerName, addr)
+		})
+		if err != nil {
+			d.logger.Printf("mdns: browse: %v", err)
+		}
+	}()
 }
 
 // detectLANIP finds a non-loopback IPv4 address to advertise in pairing.

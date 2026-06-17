@@ -4,7 +4,9 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
+import com.adrop.data.trust.TrustRepository
 import com.adrop.feature.receive.ReceiveForegroundService
+import com.adrop.net.mdns.MdnsManager
 
 /**
  * Application entry-point. Creates notification channels on first run.
@@ -14,6 +16,12 @@ class AdropApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannels()
+        startBackgroundDiscovery()
+    }
+
+    private fun startBackgroundDiscovery() {
+        val trustRepo = TrustRepository.getInstance(this)
+        MdnsManager(this, trustRepo).startDiscovery()
     }
 
     private fun createNotificationChannels() {
