@@ -1,6 +1,8 @@
 package com.adrop.ui
 
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -22,16 +24,59 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             AdropTheme {
-                AdropNavGraph(deepLinkUri = intent?.data?.toString())
+                AdropNavGraph(
+                    deepLinkUri  = intent?.data?.toString(),
+                    sharePayload = intent?.toSharePayload(),
+                )
             }
         }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        // Handle adrop://pair?d=... deep links arriving while app is in foreground.
-        // The nav graph re-composition handles this via the navController deep link mechanism.
         setIntent(intent)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Share intent parsing
+// ---------------------------------------------------------------------------
+
+/** What the system share sheet handed us. */
+sealed class SharePayload {
+    /** One or more file URIs shared from another app (gallery, file manager, etc.). */
+    data class Files(val uris: List<Uri>) : SharePayload()
+    /** Plain text or URL shared from a browser, notes app, etc. */
+    data class Text(val text: String) : SharePayload()
+}
+
+@Suppress("DEPRECATION")
+private fun Intent.toSharePayload(): SharePayload? {
+    return when (action) {
+        Intent.ACTION_SEND -> {
+            val text = getStringExtra(Intent.EXTRA_TEXT)
+            if (!text.isNullOrBlank()) {
+                SharePayload.Text(text)
+            } else {
+                val uri: Uri? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                } else {
+                    @Suppress("UNCHECKED_CAST")
+                    getParcelableExtra(Intent.EXTRA_STREAM)
+                }
+                uri?.let { SharePayload.Files(listOf(it)) }
+            }
+        }
+        Intent.ACTION_SEND_MULTIPLE -> {
+            val uris: ArrayList<Uri>? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
+            } else {
+                @Suppress("UNCHECKED_CAST")
+                getParcelableArrayListExtra(Intent.EXTRA_STREAM)
+            }
+            uris?.takeIf { it.isNotEmpty() }?.let { SharePayload.Files(it) }
+        }
+        else -> null
     }
 }
 
@@ -47,10 +92,13 @@ private object Routes {
 }
 
 @Composable
-private fun AdropNavGraph(deepLinkUri: String?) {
+private fun AdropNavGraph(deepLinkUri: String?, sharePayload: SharePayload?) {
     val navController = rememberNavController()
 
-    NavHost(navController = navController, startDestination = Routes.HOME) {
+    // If launched from the share sheet, open SendScreen directly instead of Home.
+    val startDestination = if (sharePayload != null) Routes.SEND else Routes.HOME
+
+    NavHost(navController = navController, startDestination = startDestination) {
         composable(Routes.HOME) { backStackEntry ->
             HomeScreen(
                 onNavigateSend    = { navController.navigate(Routes.SEND) },
@@ -60,7 +108,17 @@ private fun AdropNavGraph(deepLinkUri: String?) {
             )
         }
         composable(Routes.SEND) {
-            SendScreen(onBack = { navController.popBackStack() })
+            SendScreen(
+                onBack = {
+                    if (!navController.popBackStack()) {
+                        // Launched directly from share sheet — no back stack; go home.
+                        navController.navigate(Routes.HOME) {
+                            popUpTo(Routes.SEND) { inclusive = true }
+                        }
+                    }
+                },
+                sharePayload = sharePayload,
+            )
         }
         composable(Routes.DEVICES) {
             DevicesScreen(onBack = { navController.popBackStack() })
@@ -68,7 +126,6 @@ private fun AdropNavGraph(deepLinkUri: String?) {
         composable(Routes.SCAN) {
             ScanScreen(
                 onPaired = { deviceName ->
-                    // Stash device name so HomeScreen can show a "Paired!" confirmation snackbar.
                     navController
                         .getBackStackEntry(Routes.HOME)
                         .savedStateHandle["pairedDevice"] = deviceName

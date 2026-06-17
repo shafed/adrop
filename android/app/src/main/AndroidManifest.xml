@@ -54,6 +54,27 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="adrop" android:host="pair" />
             </intent-filter>
+
+            <!-- Share sheet: single file of any type -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+
+            <!-- Share sheet: multiple files of any type -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+
+            <!-- Share sheet: plain text (share text/URL to clipboard) -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
         </activity>
 
         <!-- Bounded receive-window foreground service -->

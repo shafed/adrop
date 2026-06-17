@@ -1,37 +1,43 @@
 package com.adrop.feature.send
 
-import android.app.Activity
-import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.adrop.data.trust.TrustedDevice
+import com.adrop.ui.SharePayload
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SendScreen(
     vm: SendViewModel = viewModel(factory = SendViewModel.factory(LocalContext.current)),
     onBack: () -> Unit,
+    sharePayload: SharePayload? = null,
 ) {
     val state by vm.state.collectAsState()
     val clipboardManager = LocalClipboardManager.current
 
-    // SAF file picker
+    // Apply share payload once on first composition.
+    LaunchedEffect(sharePayload) {
+        when (sharePayload) {
+            is SharePayload.Files -> vm.setPickedUris(sharePayload.uris)
+            is SharePayload.Text  -> vm.setClipboardText(sharePayload.text)
+            null                  -> Unit
+        }
+    }
+
+    // SAF file picker (still available when not coming from share sheet)
     val filePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
