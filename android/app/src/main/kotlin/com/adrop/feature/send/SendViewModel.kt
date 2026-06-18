@@ -204,11 +204,21 @@ class SendViewModel(
                 prefs.edit().putString(KEY_LAST_DEVICE_FP, device.fingerprint).apply()
             }
             _state.update {
-                it.copy(
-                    isSending = false,
-                    result = if (result.isSuccess) SendResult.Success
-                             else SendResult.Error(result.exceptionOrNull()?.message ?: "Unknown error")
-                )
+                if (result.isSuccess) {
+                    // Clear the composed input so the field doesn't keep stale
+                    // text/image after a successful send.
+                    it.copy(
+                        isSending      = false,
+                        clipboardText  = "",
+                        pickedImageUri = null,
+                        result         = SendResult.Success,
+                    )
+                } else {
+                    it.copy(
+                        isSending = false,
+                        result    = SendResult.Error(result.exceptionOrNull()?.message ?: "Unknown error"),
+                    )
+                }
             }
         }
     }

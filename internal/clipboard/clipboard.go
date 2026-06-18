@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 )
 
@@ -37,16 +38,28 @@ func Get(ctx context.Context, mime string) ([]byte, error) {
 }
 
 // Copy writes data to the clipboard via wl-copy with the given MIME type.
+//
+// wl-copy forks a long-lived background process that keeps serving the
+// selection (standard Wayland behaviour: the source client must stay alive to
+// answer paste requests). The foreground process exits as soon as that child
+// is detached, so cmd.Run only waits on the foreground process.
+//
+// Crucially, Stdout/Stderr must be real *os.File handles, NOT a bytes.Buffer.
+// With a buffer, os/exec installs an OS pipe and a copier goroutine, and
+// cmd.Wait blocks until every process holding the pipe's write end closes it —
+// including the detached wl-copy daemon, which never does (until the clipboard
+// is overwritten). That left Copy hanging forever, so the receiver never sent
+// its ack and the sending peer stalled. Routing to os.Stderr (journald for the
+// systemd user service) keeps diagnostics without the inherited-pipe deadlock.
 func Copy(ctx context.Context, data []byte, mime string) error {
 	if mime == "" {
 		mime = "text/plain"
 	}
 	cmd := exec.CommandContext(ctx, "wl-copy", "-t", mime)
 	cmd.Stdin = bytes.NewReader(data)
-	var errb bytes.Buffer
-	cmd.Stderr = &errb
+	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("wl-copy: %w: %s", err, errb.String())
+		return fmt.Errorf("wl-copy: %w", err)
 	}
 	return nil
 }
