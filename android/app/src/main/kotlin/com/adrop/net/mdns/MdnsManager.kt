@@ -6,6 +6,7 @@ import android.net.nsd.NsdServiceInfo
 import android.os.Build
 import android.util.Log
 import com.adrop.data.trust.TrustRepository
+import com.adrop.feature.send.SendWorker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -163,6 +164,7 @@ class MdnsManager(private val context: Context, private val trustRepo: TrustRepo
             val device = trustRepo.findByFingerprint(fingerprint) ?: return@launch
             trustRepo.updateAddr(fingerprint, addr)
             Log.i(TAG, "mDNS: updated addr for ${device.name} to $addr")
+            onPeerReachable(fingerprint)
         }
     }
 
@@ -172,6 +174,15 @@ class MdnsManager(private val context: Context, private val trustRepo: TrustRepo
             val match = devices.firstOrNull { it.name == serviceName } ?: return@launch
             trustRepo.updateAddr(match.fingerprint, addr)
             Log.i(TAG, "mDNS: updated addr for ${match.name} to $addr (matched by name)")
+            onPeerReachable(match.fingerprint)
         }
+    }
+
+    /**
+     * A paired peer just became reachable on the LAN. Flush any sends queued
+     * for it while it was offline (see [com.adrop.feature.send.OutboxStore]).
+     */
+    private fun onPeerReachable(fingerprint: String) {
+        SendWorker.enqueueForTarget(context, fingerprint)
     }
 }

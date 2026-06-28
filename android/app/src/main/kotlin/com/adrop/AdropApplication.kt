@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.os.Build
 import com.adrop.data.trust.TrustRepository
 import com.adrop.feature.receive.ReceiveForegroundService
+import com.adrop.feature.send.SendWorker
 import com.adrop.net.mdns.MdnsManager
 
 /**
@@ -17,6 +18,9 @@ class AdropApplication : Application() {
         super.onCreate()
         createNotificationChannels()
         startBackgroundDiscovery()
+        // Flush any sends that were queued while a PC was offline. Gated on
+        // network connectivity by the worker itself; a no-op if the queue is empty.
+        SendWorker.enqueueAll(this)
     }
 
     private fun startBackgroundDiscovery() {

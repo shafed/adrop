@@ -64,6 +64,8 @@ data class SendUiState(
 
 sealed class SendResult {
     object Success : SendResult()
+    /** PC was offline; the send was queued and will be delivered when it reappears. */
+    object Queued : SendResult()
     data class Error(val message: String) : SendResult()
 }
 
@@ -73,6 +75,8 @@ class SendViewModel(
 ) : ViewModel() {
 
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    private val outbox = OutboxStore.getInstance(context)
 
     private val _state = MutableStateFlow(SendUiState())
     val state: StateFlow<SendUiState> = _state.asStateFlow()
@@ -154,13 +158,27 @@ class SendViewModel(
             if (result.isSuccess) {
                 prefs.edit().putString(KEY_LAST_DEVICE_FP, device.fingerprint).apply()
             }
+            val sendResult = when {
+                result.isSuccess -> SendResult.Success
+                isUnreachable(result.exceptionOrNull()) -> {
+                    // PC is offline — queue the files for delivery when it returns.
+                    runCatching { queueFiles(device, uris) }
+                        .fold(
+                            onSuccess = {
+                                prefs.edit().putString(KEY_LAST_DEVICE_FP, device.fingerprint).apply()
+                                SendResult.Queued
+                            },
+                            onFailure = { SendResult.Error(it.message ?: "Could not queue files") },
+                        )
+                }
+                else -> SendResult.Error(result.exceptionOrNull()?.message ?: "Unknown error")
+            }
             _state.update {
                 it.copy(
                     isSending        = false,
                     sendPhase        = null,
                     transferProgress = null,
-                    result = if (result.isSuccess) SendResult.Success
-                             else SendResult.Error(result.exceptionOrNull()?.message ?: "Unknown error")
+                    result           = sendResult,
                 )
             }
         }
@@ -203,21 +221,30 @@ class SendViewModel(
             if (result.isSuccess) {
                 prefs.edit().putString(KEY_LAST_DEVICE_FP, device.fingerprint).apply()
             }
+            val sendResult = when {
+                result.isSuccess -> SendResult.Success
+                isUnreachable(result.exceptionOrNull()) ->
+                    runCatching { queueClipboard(device, bytes, mime.mime) }
+                        .fold(
+                            onSuccess = {
+                                prefs.edit().putString(KEY_LAST_DEVICE_FP, device.fingerprint).apply()
+                                SendResult.Queued
+                            },
+                            onFailure = { SendResult.Error(it.message ?: "Could not queue clipboard") },
+                        )
+                else -> SendResult.Error(result.exceptionOrNull()?.message ?: "Unknown error")
+            }
             _state.update {
-                if (result.isSuccess) {
-                    // Clear the composed input so the field doesn't keep stale
-                    // text/image after a successful send.
-                    it.copy(
+                when (sendResult) {
+                    // On success or queueing, clear the composed input so the
+                    // field doesn't keep stale text/image around.
+                    SendResult.Success, SendResult.Queued -> it.copy(
                         isSending      = false,
                         clipboardText  = "",
                         pickedImageUri = null,
-                        result         = SendResult.Success,
+                        result         = sendResult,
                     )
-                } else {
-                    it.copy(
-                        isSending = false,
-                        result    = SendResult.Error(result.exceptionOrNull()?.message ?: "Unknown error"),
-                    )
+                    else -> it.copy(isSending = false, result = sendResult)
                 }
             }
         }
@@ -226,6 +253,52 @@ class SendViewModel(
     fun clearResult() {
         _state.update { it.copy(result = null) }
     }
+
+    // ---------------------------------------------------------------------------
+    // Offline queueing
+    // ---------------------------------------------------------------------------
+
+    /**
+     * True if [t] looks like "the PC is simply not reachable right now"
+     * (offline / off the LAN), as opposed to a protocol or data error. Only
+     * connection-level failures get silently queued; everything else surfaces.
+     */
+    private fun isUnreachable(t: Throwable?): Boolean = when (t) {
+        is java.net.ConnectException,
+        is java.net.SocketTimeoutException,
+        is java.net.NoRouteToHostException,
+        is java.net.PortUnreachableException,
+        is java.net.UnknownHostException -> true
+        // A TLS handshake that never reached the peer also manifests as an IO
+        // error on connect; treat a bare connect-time IOException as offline.
+        is java.io.IOException -> t.cause is java.net.SocketException || t is java.net.SocketException
+        else -> false
+    }
+
+    private suspend fun queueFiles(device: TrustedDevice, uris: List<Uri>) {
+        val resolver = context.contentResolver
+        outbox.enqueue(device.fingerprint, OutboxKind.FILES) { dir ->
+            uris.forEachIndexed { i, uri ->
+                // Prefix with the index so listFiles().sortedBy preserves order
+                // even when two picked files share a display name.
+                val name = "%04d-%s".format(i, sanitize(queryFileName(uri)))
+                resolver.openInputStream(uri)!!.use { input ->
+                    java.io.File(dir, name).outputStream().use { input.copyTo(it) }
+                }
+            }
+        }
+        SendWorker.enqueueForTarget(context, device.fingerprint)
+    }
+
+    private suspend fun queueClipboard(device: TrustedDevice, bytes: ByteArray, mime: String) {
+        outbox.enqueue(device.fingerprint, OutboxKind.CLIPBOARD, mime = mime) { dir ->
+            java.io.File(dir, "clipboard.bin").writeBytes(bytes)
+        }
+        SendWorker.enqueueForTarget(context, device.fingerprint)
+    }
+
+    private fun sanitize(name: String): String =
+        name.replace(Regex("[/\\\\:]"), "_").ifBlank { "file" }
 
     // ---------------------------------------------------------------------------
     // I/O workers
