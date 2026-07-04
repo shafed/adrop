@@ -53,7 +53,7 @@ like the CLI.
 
 ```sh
 make build-gui          # CGO_ENABLED=1, builds ./adrop with the GUI subcommand
-make install            # install the binary
+make install-gui        # install the GUI-enabled binary
 make gui-install        # add the app-menu launcher (~/.local/share/applications)
 adrop gui               # or launch from the app menu
 ```

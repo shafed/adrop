@@ -63,6 +63,8 @@ fun SendScreen(
             when (result) {
                 is SendResult.Success ->
                     snackbarHostState.showSnackbar("Sent successfully!")
+                is SendResult.Queued ->
+                    snackbarHostState.showSnackbar("PC is offline — queued, will send when it's back")
                 is SendResult.Error ->
                     snackbarHostState.showSnackbar("Error: ${result.message}")
             }

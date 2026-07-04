@@ -2,7 +2,6 @@
 Description=adrop — AirDrop-like file & clipboard transfer daemon
 Documentation=https://github.com/shafed/adrop
 After=graphical-session.target
-PartOf=graphical-session.target
 
 [Service]
 Type=simple
@@ -10,12 +9,18 @@ ExecStart=%h/.local/bin/adrop daemon
 Restart=on-failure
 RestartSec=2
 # The daemon needs the user's Wayland session for wl-clipboard / notify-send.
-# These are provided by the graphical session's environment (imported via
-# `systemctl --user import-environment` or a display-manager integration).
+# Compositors that don't activate graphical-session.target (e.g. Hyprland) must
+# import their environment into the user manager and restart this unit
+# afterward, since it's already running by the time the import happens, e.g.
+# an exec-once of:
+#   systemctl --user import-environment WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP && systemctl --user restart adrop.service
 Environment=ADROP_PORT=53127
 # Relay base URL for FCM wake: when a direct dial to a phone fails, the daemon
 # POSTs /wake here so the phone opens its receive window, then retries.
 Environment=ADROP_RELAY=http://localhost:8080
 
+# default.target is reached on login for users with linger enabled, regardless
+# of whether the compositor activates graphical-session.target. This makes the
+# daemon autostart on minimal/standalone Wayland sessions (Hyprland, sway, …).
 [Install]
-WantedBy=graphical-session.target
+WantedBy=default.target
