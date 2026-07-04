@@ -6,7 +6,7 @@ UNITDIR := $(HOME)/.config/systemd/user
 DOLPHIN_DIR := $(HOME)/.local/share/kio/servicemenus
 APPS_DIR := $(HOME)/.local/share/applications
 
-.PHONY: all build build-gui test vet race install uninstall clean \
+.PHONY: all build build-gui test vet race install install-gui uninstall clean \
         dolphin-install dolphin-uninstall gui-install gui-uninstall
 
 all: build
@@ -36,6 +36,13 @@ install: build
 	@echo "  systemctl --user daemon-reload"
 	@echo "  systemctl --user enable --now adrop"
 
+install-gui: build-gui
+	install -Dm755 $(BINARY) $(BINDIR)/$(BINARY)
+	install -Dm644 packaging/systemd/adrop.service $(UNITDIR)/adrop.service
+	@echo "Installed GUI-enabled binary. Enable the daemon with:"
+	@echo "  systemctl --user daemon-reload"
+	@echo "  systemctl --user enable --now adrop"
+
 uninstall:
 	systemctl --user disable --now adrop 2>/dev/null || true
 	rm -f $(BINDIR)/$(BINARY) $(UNITDIR)/adrop.service
@@ -52,7 +59,7 @@ dolphin-uninstall:
 
 gui-install:
 	install -Dm644 packaging/desktop/adrop-gui.desktop $(APPS_DIR)/adrop-gui.desktop
-	@echo "Installed app launcher. Build the GUI binary with: make build-gui install"
+	@echo "Installed app launcher. Build the GUI binary with: make install-gui"
 
 gui-uninstall:
 	rm -f $(APPS_DIR)/adrop-gui.desktop
