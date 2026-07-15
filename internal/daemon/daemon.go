@@ -27,9 +27,16 @@ const DefaultPort = 53127
 type Daemon struct {
 	store    *config.Store
 	name     string
-	tcpAddr  string // host:port advertised in pairing (LAN IP:port)
 	listenIP string // bind address for the TLS listener ("" = all)
 	port     int
+
+	// tcpAddr is the host:port advertised in pairing (LAN IP:port). When
+	// autoIP is true it was auto-detected and may be refreshed later (see
+	// refreshAdvertiseAddr); guarded by addrMu since refresh can race with
+	// concurrent reads from in-flight Hello exchanges.
+	addrMu  sync.RWMutex
+	tcpAddr string
+	autoIP  bool // true when Options.AdvertiseIP was empty (auto-detect)
 
 	// relayAddr is the base URL of an adrop-relay server (e.g.
 	// "http://relay.example.com:8080"). When non-empty and a direct dial
@@ -115,6 +122,7 @@ func New(opt Options) (*Daemon, error) {
 		port:         port,
 		listenIP:     opt.ListenIP,
 		tcpAddr:      net.JoinHostPort(ip, fmt.Sprint(port)),
+		autoIP:       opt.AdvertiseIP == "",
 		relayAddr:    relay,
 		logger:       logger,
 		downloadDir:  dl,
@@ -310,6 +318,35 @@ func (d *Daemon) broadcast(e ipc.Event) {
 		}
 	}
 	d.subMu.Unlock()
+}
+
+// advertiseAddr returns the host:port to put in Hello/pairing messages.
+func (d *Daemon) advertiseAddr() string {
+	d.addrMu.RLock()
+	defer d.addrMu.RUnlock()
+	return d.tcpAddr
+}
+
+// refreshAdvertiseAddr re-detects the LAN IP when it was auto-detected
+// (ADROP_ADVERTISE_IP unset) and updates tcpAddr if a real address is now
+// found. This matters because the daemon commonly starts under systemd at
+// login, before the network is up; detectLANIP falls back to 127.0.0.1 at
+// that point and, without this refresh, the daemon would advertise loopback
+// in every pairing QR until restarted. Called from the user-driven pairing
+// entry points (PairingURI, AddPeer), by which time the network has usually
+// come up. An explicit ADROP_ADVERTISE_IP, or a previously found real
+// address, is never overwritten with the loopback fallback.
+func (d *Daemon) refreshAdvertiseAddr() {
+	if !d.autoIP {
+		return
+	}
+	ip := detectLANIP()
+	if ip == "127.0.0.1" {
+		return
+	}
+	d.addrMu.Lock()
+	d.tcpAddr = net.JoinHostPort(ip, fmt.Sprint(d.port))
+	d.addrMu.Unlock()
 }
 
 // detectLANIP finds a non-loopback IPv4 address to advertise in pairing.

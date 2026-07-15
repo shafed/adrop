@@ -48,7 +48,7 @@ func (d *Daemon) handlePeer(ctx context.Context, raw net.Conn) {
 		Version:     proto.ProtocolVersion,
 		Fingerprint: d.store.Fingerprint(),
 		Name:        d.name,
-		Addr:        d.tcpAddr,
+		Addr:        d.advertiseAddr(),
 	}); err != nil {
 		d.logger.Printf("peer: send hello: %v", err)
 		return

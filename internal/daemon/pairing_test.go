@@ -212,3 +212,41 @@ func TestDialAbortsOnContextCancel(t *testing.T) {
 		t.Fatalf("send did not abort on cancel: took %s (>= mdnsRecoverTimeout %s)", elapsed, mdnsRecoverTimeout)
 	}
 }
+
+// TestRefreshAdvertiseAddrRecoversFromLoopbackFallback is a regression test
+// for a daemon started (e.g. under systemd at login) before the network came
+// up: detectLANIP falls back to 127.0.0.1 at that moment, and without a
+// later refresh every pairing QR would advertise loopback forever, so a
+// scanning phone tries to connect to itself and gets ECONNREFUSED. Once a
+// real LAN IP is available, refreshAdvertiseAddr (called from PairingURI /
+// AddPeer) must pick it up.
+func TestRefreshAdvertiseAddrRecoversFromLoopbackFallback(t *testing.T) {
+	d := &Daemon{port: DefaultPort, autoIP: true, tcpAddr: "127.0.0.1:" + itoa(DefaultPort)}
+
+	d.refreshAdvertiseAddr()
+
+	got := d.advertiseAddr()
+	host, port, err := net.SplitHostPort(got)
+	if err != nil {
+		t.Fatalf("split refreshed addr %q: %v", got, err)
+	}
+	if host == "127.0.0.1" {
+		t.Fatalf("refreshAdvertiseAddr left tcpAddr at loopback: %q (this environment must have a real network interface for the test to be meaningful)", got)
+	}
+	if port != itoa(DefaultPort) {
+		t.Fatalf("refreshAdvertiseAddr changed the port: got %q, want port %d", got, DefaultPort)
+	}
+}
+
+// TestRefreshAdvertiseAddrRespectsExplicitOverride verifies an explicit
+// ADROP_ADVERTISE_IP (autoIP=false) is never touched by refreshAdvertiseAddr,
+// even if it happens to be loopback (e.g. intentionally, for local testing).
+func TestRefreshAdvertiseAddrRespectsExplicitOverride(t *testing.T) {
+	d := &Daemon{port: DefaultPort, autoIP: false, tcpAddr: "127.0.0.1:" + itoa(DefaultPort)}
+
+	d.refreshAdvertiseAddr()
+
+	if got := d.advertiseAddr(); got != "127.0.0.1:"+itoa(DefaultPort) {
+		t.Fatalf("refreshAdvertiseAddr changed an explicit override: got %q", got)
+	}
+}

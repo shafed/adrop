@@ -34,12 +34,13 @@ func renderQR(uri string) (string, error) {
 
 // PairingURI builds this device's pairing payload + URI (for QR rendering).
 func (d *Daemon) PairingURI() (string, error) {
+	d.refreshAdvertiseAddr()
 	p := pairing.Payload{
 		Version:     2,
 		Name:        d.name,
 		Fingerprint: d.store.Fingerprint(),
 		CertPEM:     string(d.store.CertPEM()),
-		Addr:        d.tcpAddr,
+		Addr:        d.advertiseAddr(),
 	}
 	return pairing.Encode(p)
 }
@@ -49,6 +50,7 @@ func (d *Daemon) PairingURI() (string, error) {
 // reachability). The peer is recorded immediately; the back-connect is best
 // effort and reported via the returned message.
 func (d *Daemon) AddPeer(uri string) (config.Device, error) {
+	d.refreshAdvertiseAddr()
 	p, err := pairing.Decode(uri)
 	if err != nil {
 		return config.Device{}, err
@@ -87,7 +89,7 @@ func (d *Daemon) helloPeer(dev config.Device) error {
 		Version:     proto.ProtocolVersion,
 		Fingerprint: d.store.Fingerprint(),
 		Name:        d.name,
-		Addr:        d.tcpAddr,
+		Addr:        d.advertiseAddr(),
 	}); err != nil {
 		return err
 	}

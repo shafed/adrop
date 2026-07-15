@@ -37,7 +37,7 @@ func (d *Daemon) handleIPC(ctx context.Context, conn net.Conn) {
 		send(ipc.Response{Status: &ipc.StatusInfo{
 			Name:        d.name,
 			Fingerprint: d.store.Fingerprint(),
-			ListenAddr:  d.tcpAddr,
+			ListenAddr:  d.advertiseAddr(),
 			NumDevices:  len(d.store.Devices()),
 			LastPeer:    lastPeerName,
 		}, Done: true})
