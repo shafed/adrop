@@ -138,7 +138,7 @@ func (d *Daemon) dialPeer(ctx context.Context, target string) (*tls.Conn, config
 		Version:     proto.ProtocolVersion,
 		Fingerprint: d.store.Fingerprint(),
 		Name:        d.name,
-		Addr:        d.tcpAddr,
+		Addr:        d.advertiseAddr(),
 	}); err != nil {
 		conn.Close()
 		return nil, dev, err
