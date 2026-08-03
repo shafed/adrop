@@ -92,6 +92,124 @@ time the peer sends us anything — no re-pairing required after a DHCP address 
 
 All three pass under `make race`.
 
+## Bug FIXED — advertised address stuck on loopback after a cold start
+
+### What was wrong
+
+If the daemon started under systemd before the network came up (common at
+login), `detectLANIP()` fell back to `127.0.0.1`. `refreshAdvertiseAddr()`
+existed to re-detect once a real IP appeared, but it was only called from the
+pairing entry points (`PairingURI`, `AddPeer`). `adrop status`, and — more
+importantly — every Hello sent on an inbound receive (`receive.go`) or an
+outbound send (`send.go`), called `advertiseAddr()` directly and never
+refreshed. A daemon that never happened to go through pairing after boot
+would advertise `127.0.0.1:53127` to every peer indefinitely.
+
+### How it was fixed
+
+`advertiseAddr()` (`internal/daemon/daemon.go`) now re-detects inline
+whenever the cached address is still loopback and `autoIP` is set, guarded so
+it's a no-op (no extra UDP dial) once a real address has been found. Covers
+all call sites uniformly instead of requiring each one to remember to call
+`refreshAdvertiseAddr` first.
+
+Regression test: `TestAdvertiseAddrSelfHealsFromLoopback` in
+`internal/daemon/pairing_test.go`, which calls `advertiseAddr()` directly
+without a prior manual refresh.
+
+## Bug FIXED — FCM wake never actually worked
+
+### What was wrong (found via live debugging on real hardware)
+
+Sending from one paired PC to the phone opened the phone's receive window
+automatically; sending from another paired PC did not — it just failed with
+`connection refused`. Root-caused to a chain of independent breaks, all now
+fixed:
+
+1. **Protocol gap (Android):** the phone only included its FCM token in the
+   Hello message when *it* initiated a send (`SendCore.kt`/`SendViewModel.kt`).
+   The pairing back-connect (`PairViewModel.kt`) and the receive-side Hello
+   reply (`ReceiveForegroundService.kt`) never set `fcmToken`. A PC that had
+   only ever *received* from the phone (never had the phone dial out to it
+   first) never learned its token.
+2. **Dropped on the PC (Go):** `dialPeer` in `internal/daemon/send.go` read
+   the peer's Hello reply on every outbound send and discarded it —
+   `UpdateFcmToken` was only ever called from the inbound path
+   (`receive.go`), so even when the phone did send a token back on an
+   outbound dial, the PC threw it away.
+3. **No proactive token fetch (Android):** `AdropApplication` never called
+   `FirebaseMessaging.getInstance().token` — it relied entirely on
+   `AdropFirebaseService.onNewToken()`, which only fires when a token is
+   newly issued or rotates, not on every app start. A device that missed
+   that event had no cached token to send in any Hello at all
+   (`~/…/shared_prefs/adrop_fcm.xml` didn't exist on-device).
+4. **`adrop-relay` not running:** the systemd unit
+   (`~/dotfiles/systemd/user/adrop-relay.service`) was enabled but
+   crash-looping — it pointed at `~/.config/adrop/fcm-service-account.json`,
+   which didn't exist under that name.
+5. **`google-services.json` was a placeholder:** the committed (gitignored)
+   `android/app/google-services.json` had `project_id: "adrop-dummy"`, while
+   the relay's service-account key was for the real project `adrop-369fc`.
+   Even with everything else fixed, a token minted under the dummy project
+   is meaningless to a relay authenticating as a different project — FCM
+   rejects the send. This was the deepest blocker: no amount of code fixing
+   helps if client and server disagree on which Firebase project they're in.
+
+A red herring along the way: the phone's logcat was full of
+`com.google.android.gms` `BadAuthentication` errors on an unrelated Google
+account-auth path. It looked like it would block Firebase token issuance
+entirely, but turned out to be unrelated noise — the token was obtained
+successfully once (5) was fixed, `BadAuthentication` spam and all.
+
+### How it was fixed
+
+- `internal/daemon/send.go`: `dialPeer` now captures the peer's Hello reply
+  and calls `d.store.UpdateFcmToken(fp, theirHello.FcmToken)`, matching what
+  the inbound path already did.
+- `android/.../feature/pair/PairViewModel.kt` and
+  `android/.../feature/receive/ReceiveForegroundService.kt`: both now set
+  `fcmToken = FcmTokenStore.load(context)` in their Hello, same as the
+  existing send path.
+- `android/.../AdropApplication.kt`: added `fetchFcmToken()`, called from
+  `onCreate()`, which proactively fetches and caches the current token via
+  `FirebaseMessaging.getInstance().token` instead of only reacting to
+  `onNewToken`.
+- Symlinked `~/.config/adrop/fcm-service-account.json` →  the real
+  `adrop-369fc-firebase-adminsdk-*.json` service-account key so the existing
+  `adrop-relay.service` unit could find it.
+- Replaced `android/app/google-services.json` with the real config for
+  project `adrop-369fc`, matching the relay's service account.
+
+### Verified end-to-end on real hardware
+
+```
+dial SM-S721B failed (connection refused); sending FCM wake via relay
+FCM wake sent; waiting up to 15s for phone to open receive window…
+phone SM-S721B woke up; connected at 192.168.0.12:7777
+```
+Phone's receive window was closed; direct dial failed as expected; wake
+round-tripped through FCM and the phone opened its window and accepted the
+connection within ~1s.
+
+## Network edge-case findings (operational, not code — no fix needed here)
+
+While debugging the above, three network edge cases were checked on a real
+laptop+phone pair:
+
+- **Multiple active interfaces / VPN / Docker bridges confusing
+  `detectLANIP()`:** ruled out on the machine tested (only `wlan0` present).
+  Not a bug, but worth re-checking on a machine that actually has a VPN or
+  Docker running.
+- **PC and phone on different subnets:** confirmed as the direct cause of
+  one `connection refused` — the phone had roamed onto a different network
+  (`10.152.x.x`, likely mobile data) than the PC's stored pairing (`192.168.0.x`).
+  This is why the FCM-wake chain above matters: it's the intended recovery
+  path for exactly this situation.
+- **`avahi-daemon` disabled:** mDNS address healing
+  (`internal/mdns`) was completely inert because `avahi-daemon.service` was
+  disabled on the laptop. Fixed operationally (`systemctl --user enable
+  --now avahi-daemon`), not a code change.
+
 ## Environment variables
 
 | Variable             | Purpose                                  | Default                        |
@@ -317,7 +435,9 @@ certificate thumbprint display format, not the wire format).
    self-heal-on-inbound mechanism corrects the port automatically on the next
    transfer. Verify on real devices after a DHCP renewal.
 7. **[FEATURE] mDNS discovery.** Currently requires QR scan for initial setup.
-8. **[FEATURE] FCM wake.** Phone receive window must be manually opened.
+8. ~~**[FEATURE] FCM wake.** Phone receive window must be manually opened.~~
+   **DONE** — verified end-to-end on real hardware, see "Bug FIXED — FCM wake
+   never actually worked" above.
 
 ## Gotchas learned
 
