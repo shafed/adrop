@@ -22,11 +22,18 @@ This document specifies v1 only. It assumes familiarity with `SPEC.md`,
 - Send the local clipboard to the current peer.
 - Be the *friendly entry point*: if the daemon isn't running, say so and offer
   to start it — don't just error like the CLI.
+- **Manage trusted devices** in the window: see the full list, **rename** one,
+  **revoke** one you no longer trust, and **add** a new peer via the pairing
+  QR/URI — the core device cycle with no CLI required (§5.4).
 
 ### Non-goals (explicitly out of scope for v1)
-- **Pairing UI / QR display.** Pairing stays CLI-only (`adrop pair show/add`).
-  No `CmdPairShow` rendering in the GUI.
-- **Device management** (revoke, rename) in the GUI. CLI-only.
+- **Pairing is the *only* add-device path, and it lives in the GUI.** The CLI's
+  `adrop pair show`/`pair add` remain available and unchanged; the GUI's Add
+  dialog (§5.4) renders the same QR and accepts the same URI, because pairing is
+  an explicit one-time action — not automatic discovery.
+- **Device management beyond the essentials** (bulk import/export, offline
+  state sync, liveness probing). The v1 GUI cycle is add → list → rename →
+  revoke (§5.4); everything else stays CLI-only.
 - **Online/offline liveness dots** in the peer dropdown. The dropdown lists
   trusted devices by name only; the daemon has no liveness probe and v1 does not
   add one. A send to an offline peer simply fails (handled gracefully, §6).
@@ -179,6 +186,26 @@ Out of scope to surface in the feed for v1 (clipboard sets silently today). The
 event schema above covers files only. (Adding a `recv-clipboard` kind later is
 trivial and non-breaking.)
 
+### 4.4 New IPC: `CmdRename`
+
+Rename is the one management action with **no existing IPC**. It is additive and
+backward-compatible, like §4.1.
+
+```go
+const CmdRename Command = "rename" // rename a trusted device (name is cosmetic)
+```
+
+- `Request` gains `Name string \`json:"name,omitempty"\`` for the new display
+  name.
+- `CmdRename` takes `Target` (name or fingerprint prefix, matching `CmdRevoke`)
+  and the new `Name`; `Response.Err` reports not-found / invalid-name.
+- Daemon side: add a `Store.RenameDevice(nameOrFp, newName)` to
+  `internal/config` (devices are keyed by pinned fingerprint, so a rename touches
+  display name only and **never** affects trust), and wire it in
+  `internal/daemon/ipc_handler.go`. An old daemon without the arm answers
+  `Err` ("unknown command") — the GUI handles that as a read-only fallback
+  (§5.4).
+
 ---
 
 ## 5. GUI behavior & layout
@@ -186,6 +213,7 @@ trivial and non-breaking.)
 ```
 ┌─ adrop ────────────┐
 │ Peer: [thinkpad ▾] │   ← dropdown from CmdDevices; default = LastPeer
+│      [manage]      │   ← device-management dialog (§5.4)
 │                    │
 │  drop files here   │   ← drag-drop target (text/uri-list, file://)
 │   ⬇ file:/// ok    │
@@ -231,6 +259,36 @@ trivial and non-breaking.)
 - If the subscribe connection drops (daemon restart), the GUI silently
   reconnects with backoff; falls back to the §7 "daemon not running" state if it
   can't.
+
+### 5.4 Device management
+
+A `[manage]` button beside the peer dropdown opens a dialog with the full
+trusted-device list plus the add/rename/revoke actions. The daemon remains the
+single source of truth; the GUI is a thin IPC client exactly as in §5.1.
+
+**List.** `CmdDevices` round-trip (same one the dropdown uses) → each device
+shown as name + fingerprint prefix + last-known address. No liveness probing
+(§1 non-goals).
+
+**Add (pair).** An **Add** button opens the pairing dialog — the QR rendered
+from `CmdPairShow`, or paste an `adrop://pair?d=...` URI → `CmdPairAdd`
+(the same flow `adrop pair show` / `adrop pair add` drive on the CLI). When a
+device is added, the list and the peer dropdown refresh immediately.
+
+**Rename.** A per-device rename action issues the new `CmdRename` (§4.4) with
+`Target` (existing name or fingerprint prefix) and `Name` (the new name). The
+rename is persisted by the daemon (peer identity is the pinned fingerprint, so
+renaming does **not** affect trust); the list and dropdown refresh on success.
+
+**Revoke.** A per-device revoke action fires `CmdRevoke{Target: ...}`, mirroring
+`adrop revoke`. Because revoke is immediate and destructive, confirm with a
+dialog ("Untrust <name>? You won't be able to send to it until you pair
+again."). After revoke, remove the device from the dropdown; if the dropdown
+becomes empty, fall into the zero-devices state of §5.1.
+
+If the daemon doesn't support an action (e.g. old daemon, unknown `CmdRename`),
+the dialog surfaces the `Response.Err` inline and leaves the list unchanged —
+the GUI must never pretend a change succeeded.
 
 ---
 
@@ -281,6 +339,8 @@ in memory until a send succeeds or the user clears it.
 - **Fully additive.** The new `CmdSubscribe`/`Event` and `Response.Event` field
   are ignored by older clients (the CLI never sends `CmdSubscribe` and never
   reads `Event`). Existing daemon/CLI behavior is byte-for-byte unchanged.
+- `CmdRename` (§4.4) is additive too: old daemons answer `Err`; the GUI treats
+  that as read-only mode (list/revoke/add still work, rename is hidden).
 - A new GUI talking to an **old daemon** (no `CmdSubscribe`): the subscribe dial
   gets an "unknown command" error and `Done:true`; the GUI degrades to
   **send-only** (no inbound feed) without crashing. Send still works against any
@@ -294,29 +354,40 @@ in memory until a send succeeds or the user clears it.
 
 ## 9. Touch list (for implementers)
 
-- `internal/ipc/ipc.go` — add `CmdSubscribe`, `Event` type, `Response.Event`.
+- `internal/ipc/ipc.go` — add `CmdSubscribe`, `Event` type, `Response.Event`,
+  plus `CmdRename` and `Request.Name`.
 - `internal/daemon/daemon.go` — subscriber registry on `Daemon` (+ subscribe/
   unsubscribe/broadcast).
-- `internal/daemon/ipc_handler.go` — `CmdSubscribe` arm (long-lived stream).
+- `internal/daemon/ipc_handler.go` — `CmdSubscribe` arm (long-lived stream),
+  `CmdRename` arm.
+- `internal/config/config.go` — `Store.RenameDevice(nameOrFp, newName)`.
 - `internal/daemon/receive.go` — emit broadcasts at start/progress/file-done/
   done/error (hook the existing `onProgress` callback and notify points; no
   behavior change).
 - `cmd/adrop/main.go` — register `gui` subcommand (under `//go:build gui`).
 - `cmd/adrop/gui.go` (new, `//go:build gui`) — Fyne window, `SetOnDropped`,
-  file:// URI decode, send round-trips, subscribe loop, daemon-start button.
+  file:// URI decode, send round-trips, subscribe loop, daemon-start button,
+  device-management dialog (§5.4).
 - `Makefile` — `build-gui`, `gui-install`, `gui-uninstall` targets.
 - `packaging/desktop/adrop-gui.desktop` (new).
-- `README.md` — document `adrop gui` and the build-gui/install flow.
+- `README.md` — document `adrop gui`, the build-gui/install flow, and GUI device
+  management.
 
 ### Tests
-- `internal/ipc` round-trip of the new `Event`/`CmdSubscribe` JSON.
+- `internal/ipc` round-trip of the new `Event`/`CmdSubscribe` JSON and
+  `CmdRename`/`Request.Name`.
+- `internal/config` `RenameDevice`: rename by name and by fingerprint prefix;
+  unknown device → error; rename does **not** affect the pinned fingerprint.
 - `internal/daemon` subscriber broadcast: a subscribed connection receives
   `recv-*` events during a receive session; a slow subscriber is dropped without
   stalling the transfer; unsubscribe on disconnect.
+- `internal/daemon` `CmdRename` round-trip: success, unknown target, old-daemon
+  "unknown command" degrade.
 - `file://` URI decoder unit tests (escapes, spaces, multiple URIs, non-file
   scheme rejection, missing path).
 - The GUI rendering itself is not unit-tested; logic (URI decode, send request
-  construction, event handling) lives in testable non-GUI helpers.
+  construction, event handling, management-dialog request construction) lives in
+  testable non-GUI helpers.
 
 ---
 
