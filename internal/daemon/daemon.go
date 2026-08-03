@@ -320,22 +320,32 @@ func (d *Daemon) broadcast(e ipc.Event) {
 	d.subMu.Unlock()
 }
 
-// advertiseAddr returns the host:port to put in Hello/pairing messages.
+// advertiseAddr returns the host:port to put in Hello/pairing/status
+// messages. If it was auto-detected and is still stuck on the loopback
+// fallback, it re-detects first: the daemon commonly starts under systemd at
+// login before the network is up, and without this every Hello (not just
+// pairing) would keep telling peers "my address is 127.0.0.1" indefinitely.
+// Once a real address is found the loopback check below makes this a no-op,
+// so steady-state calls don't pay for a UDP dial.
 func (d *Daemon) advertiseAddr() string {
 	d.addrMu.RLock()
-	defer d.addrMu.RUnlock()
-	return d.tcpAddr
+	addr := d.tcpAddr
+	d.addrMu.RUnlock()
+	if d.autoIP {
+		if host, _, err := net.SplitHostPort(addr); err == nil && host == "127.0.0.1" {
+			d.refreshAdvertiseAddr()
+			d.addrMu.RLock()
+			addr = d.tcpAddr
+			d.addrMu.RUnlock()
+		}
+	}
+	return addr
 }
 
 // refreshAdvertiseAddr re-detects the LAN IP when it was auto-detected
 // (ADROP_ADVERTISE_IP unset) and updates tcpAddr if a real address is now
-// found. This matters because the daemon commonly starts under systemd at
-// login, before the network is up; detectLANIP falls back to 127.0.0.1 at
-// that point and, without this refresh, the daemon would advertise loopback
-// in every pairing QR until restarted. Called from the user-driven pairing
-// entry points (PairingURI, AddPeer), by which time the network has usually
-// come up. An explicit ADROP_ADVERTISE_IP, or a previously found real
-// address, is never overwritten with the loopback fallback.
+// found. An explicit ADROP_ADVERTISE_IP, or a previously found real address,
+// is never overwritten with the loopback fallback.
 func (d *Daemon) refreshAdvertiseAddr() {
 	if !d.autoIP {
 		return

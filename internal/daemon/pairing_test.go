@@ -238,6 +238,27 @@ func TestRefreshAdvertiseAddrRecoversFromLoopbackFallback(t *testing.T) {
 	}
 }
 
+// TestAdvertiseAddrSelfHealsFromLoopback is a regression test for the Hello
+// path (receive.go, send.go) and CmdStatus, which call advertiseAddr()
+// directly and never called refreshAdvertiseAddr themselves: before this,
+// only PairingURI/AddPeer refreshed a loopback-stuck address, so a daemon
+// that started before the network came up would keep telling peers "my
+// address is 127.0.0.1" until someone happened to open the pairing UI.
+// advertiseAddr must now self-heal on any call, not just pairing ones.
+func TestAdvertiseAddrSelfHealsFromLoopback(t *testing.T) {
+	d := &Daemon{port: DefaultPort, autoIP: true, tcpAddr: "127.0.0.1:" + itoa(DefaultPort)}
+
+	got := d.advertiseAddr()
+
+	host, _, err := net.SplitHostPort(got)
+	if err != nil {
+		t.Fatalf("split addr %q: %v", got, err)
+	}
+	if host == "127.0.0.1" {
+		t.Fatalf("advertiseAddr left tcpAddr at loopback: %q (this environment must have a real network interface for the test to be meaningful)", got)
+	}
+}
+
 // TestRefreshAdvertiseAddrRespectsExplicitOverride verifies an explicit
 // ADROP_ADVERTISE_IP (autoIP=false) is never touched by refreshAdvertiseAddr,
 // even if it happens to be loopback (e.g. intentionally, for local testing).
