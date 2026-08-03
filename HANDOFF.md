@@ -3,8 +3,10 @@
 AirDrop-like file & clipboard transfer between an Arch Linux PC and an Android
 phone over a key-pinned mutual-TLS LAN connection.
 
-- **PC side (Go):** daemon + CLI, in `cmd/adrop` + `internal/*`. Built/tested here.
-- **Android side (Kotlin/Compose):** in `android/`. Builds into an installable APK.
+- **PC side (Go):** daemon + CLI, in `cmd/adrop` + `internal/*`. Built/tested
+  here.
+- **Android side (Kotlin/Compose):** in `android/`. Builds into an installable
+  APK.
 
 ## What works (verified on real devices)
 
@@ -14,15 +16,17 @@ phone over a key-pinned mutual-TLS LAN connection.
 - ✅ Android app: builds, installs, launches, scans QR.
 - ✅ **Pairing phone ↔ PC succeeds** end-to-end (mutual TLS handshake completes,
   both sides pin each other).
-- ✅ **Wrong-phone-port bug FIXED** — PC now stores the phone's actual listen port
-  (e.g. 7777) after pairing, not its own port (53127). See details below.
+- ✅ **Wrong-phone-port bug FIXED** — PC now stores the phone's actual listen
+  port (e.g. 7777) after pairing, not its own port (53127). See details below.
 
 ## Bugs found & fixed during bring-up
 
-1. **Missing `gradle.properties`** → added `android.useAndroidX=true` (build failed
-   on every AndroidX dep without it).
-2. **`Icons.Default.ArrowBack`** in 3 Compose screens → `Icons.AutoMirrored.Filled.ArrowBack`.
-3. **Missing `@OptIn(ExperimentalMaterial3Api::class)`** on 4 screens using `TopAppBar`.
+1. **Missing `gradle.properties`** → added `android.useAndroidX=true` (build
+   failed on every AndroidX dep without it).
+2. **`Icons.Default.ArrowBack`** in 3 Compose screens →
+   `Icons.AutoMirrored.Filled.ArrowBack`.
+3. **Missing `@OptIn(ExperimentalMaterial3Api::class)`** on 4 screens using
+   `TopAppBar`.
 4. **`endpointAlgorithmIdentifier`** typo in `PinnedTlsContext.kt` →
    `endpointIdentificationAlgorithm = null`.
 5. **`BootReceiver` declared as `<provider>`** in AndroidManifest (it's a
@@ -37,55 +41,61 @@ phone over a key-pinned mutual-TLS LAN connection.
    ed25519 in its cert signature algorithms, so the handshake failed with
    `tls: peer doesn't support any of the certificate's signature algorithms`
    (phone saw `SSLV3_ALERT_HANDSHAKE_FAILURE`). **Fixed:** switched PC identity
-   to **ECDSA P-256** in `internal/config/config.go` (`createIdentity`). P-256 is
-   universally supported; protocol only pins SHA-256 of DER so algorithm is free.
-   Reproduced + verified with `openssl s_client -sigalgs` against the daemon.
+   to **ECDSA P-256** in `internal/config/config.go` (`createIdentity`). P-256
+   is universally supported; protocol only pins SHA-256 of DER so algorithm is
+   free. Reproduced + verified with `openssl s_client -sigalgs` against the
+   daemon.
 
 ## Bug FIXED — wrong phone port stored on PC
 
 ### What was wrong
 
 After pairing, the PC stored the phone as:
+
 ```
 "addr": "192.168.0.112:53127"   ← WRONG. Phone listens on 7777, not 53127.
 ```
-So `adrop send SM-S721B ...` failed: `dial 192.168.0.112:53127: connection refused`.
+
+So `adrop send SM-S721B ...` failed:
+`dial 192.168.0.112:53127: connection refused`.
 
 - The phone listens on **7777** (`ReceiveForegroundService.LISTEN_PORT = 7777`).
 - `53127` is the **PC daemon's** own port (`DefaultPort`).
 - Root cause: the phone's pairing Hello arrived with `addr = "0.0.0.0:7777"` (it
-  couldn't determine its own LAN IP). The old fallback in `tryCompletePairing` saw
-  an unspecified host and discarded the phone's port, substituting the PC's own port
-  (`d.port`) against the remote IP — storing `192.168.0.112:53127` instead of
-  `192.168.0.112:7777`.
+  couldn't determine its own LAN IP). The old fallback in `tryCompletePairing`
+  saw an unspecified host and discarded the phone's port, substituting the PC's
+  own port (`d.port`) against the remote IP — storing `192.168.0.112:53127`
+  instead of `192.168.0.112:7777`.
 
 ### How it was fixed
 
 `(*Daemon).resolvePeerAddr` (`internal/daemon/pairing.go`) implements a correct
 merge strategy:
 
-1. **Advertised port is authoritative.** The peer's Hello `addr` field carries its
-   listen port (e.g. 7777); that port is always kept.
+1. **Advertised port is authoritative.** The peer's Hello `addr` field carries
+   its listen port (e.g. 7777); that port is always kept.
 2. **Unspecified host → substitute source IP.** When the host in `addr` is `""`,
    `0.0.0.0`, or `::`, the actual source IP of the live TCP connection is used
    instead, while the advertised port is preserved.
-3. **No usable port at all → fall back to `DefaultPort`.** Only when the advertised
-   `addr` is empty or declares port 0 do we fall back to the daemon's own default
-   port against the source IP. (This is a last resort, not the normal path.)
+3. **No usable port at all → fall back to `DefaultPort`.** Only when the
+   advertised `addr` is empty or declares port 0 do we fall back to the daemon's
+   own default port against the source IP. (This is a last resort, not the
+   normal path.)
 
 Additionally, **self-healing on every inbound connect** (`handlePeer` in
-`internal/daemon/receive.go`): whenever a trusted peer opens an inbound connection,
-`UpdateAddr` is called with `resolvePeerAddr(hello.Addr, conn.RemoteAddr())`, so a
-stale or wrong-ported entry in `devices.json` is corrected automatically the next
-time the peer sends us anything — no re-pairing required after a DHCP address change.
+`internal/daemon/receive.go`): whenever a trusted peer opens an inbound
+connection, `UpdateAddr` is called with
+`resolvePeerAddr(hello.Addr, conn.RemoteAddr())`, so a stale or wrong-ported
+entry in `devices.json` is corrected automatically the next time the peer sends
+us anything — no re-pairing required after a DHCP address change.
 
 ### Regression tests
 
-- **`TestResolvePeerAddr`** — unit-tests all `resolvePeerAddr` cases including the
-  `0.0.0.0:port` → `sourceIP:port` fix (6 sub-cases).
+- **`TestResolvePeerAddr`** — unit-tests all `resolvePeerAddr` cases including
+  the `0.0.0.0:port` → `sourceIP:port` fix (6 sub-cases).
 - **`TestPairingStoresAdvertisedPort`** — integration test that pairs a phone
-  advertising `0.0.0.0:<port>` and asserts the stored address is `127.0.0.1:<port>`
-  (port preserved, host rewritten to source IP).
+  advertising `0.0.0.0:<port>` and asserts the stored address is
+  `127.0.0.1:<port>` (port preserved, host rewritten to source IP).
 - **`TestSelfHealAddrOnInboundConnect`** — deliberately corrupts the stored addr
   to `DefaultPort`, then has the phone send a file, and asserts the addr is
   self-healed to the phone's real advertised port.
@@ -102,15 +112,15 @@ existed to re-detect once a real IP appeared, but it was only called from the
 pairing entry points (`PairingURI`, `AddPeer`). `adrop status`, and — more
 importantly — every Hello sent on an inbound receive (`receive.go`) or an
 outbound send (`send.go`), called `advertiseAddr()` directly and never
-refreshed. A daemon that never happened to go through pairing after boot
-would advertise `127.0.0.1:53127` to every peer indefinitely.
+refreshed. A daemon that never happened to go through pairing after boot would
+advertise `127.0.0.1:53127` to every peer indefinitely.
 
 ### How it was fixed
 
-`advertiseAddr()` (`internal/daemon/daemon.go`) now re-detects inline
-whenever the cached address is still loopback and `autoIP` is set, guarded so
-it's a no-op (no extra UDP dial) once a real address has been found. Covers
-all call sites uniformly instead of requiring each one to remember to call
+`advertiseAddr()` (`internal/daemon/daemon.go`) now re-detects inline whenever
+the cached address is still loopback and `autoIP` is set, guarded so it's a
+no-op (no extra UDP dial) once a real address has been found. Covers all call
+sites uniformly instead of requiring each one to remember to call
 `refreshAdvertiseAddr` first.
 
 Regression test: `TestAdvertiseAddrSelfHealsFromLoopback` in
@@ -127,33 +137,32 @@ automatically; sending from another paired PC did not — it just failed with
 fixed:
 
 1. **Protocol gap (Android):** the phone only included its FCM token in the
-   Hello message when *it* initiated a send (`SendCore.kt`/`SendViewModel.kt`).
+   Hello message when _it_ initiated a send (`SendCore.kt`/`SendViewModel.kt`).
    The pairing back-connect (`PairViewModel.kt`) and the receive-side Hello
    reply (`ReceiveForegroundService.kt`) never set `fcmToken`. A PC that had
-   only ever *received* from the phone (never had the phone dial out to it
+   only ever _received_ from the phone (never had the phone dial out to it
    first) never learned its token.
-2. **Dropped on the PC (Go):** `dialPeer` in `internal/daemon/send.go` read
-   the peer's Hello reply on every outbound send and discarded it —
-   `UpdateFcmToken` was only ever called from the inbound path
-   (`receive.go`), so even when the phone did send a token back on an
-   outbound dial, the PC threw it away.
+2. **Dropped on the PC (Go):** `dialPeer` in `internal/daemon/send.go` read the
+   peer's Hello reply on every outbound send and discarded it — `UpdateFcmToken`
+   was only ever called from the inbound path (`receive.go`), so even when the
+   phone did send a token back on an outbound dial, the PC threw it away.
 3. **No proactive token fetch (Android):** `AdropApplication` never called
    `FirebaseMessaging.getInstance().token` — it relied entirely on
-   `AdropFirebaseService.onNewToken()`, which only fires when a token is
-   newly issued or rotates, not on every app start. A device that missed
-   that event had no cached token to send in any Hello at all
+   `AdropFirebaseService.onNewToken()`, which only fires when a token is newly
+   issued or rotates, not on every app start. A device that missed that event
+   had no cached token to send in any Hello at all
    (`~/…/shared_prefs/adrop_fcm.xml` didn't exist on-device).
 4. **`adrop-relay` not running:** the systemd unit
-   (`~/dotfiles/systemd/user/adrop-relay.service`) was enabled but
-   crash-looping — it pointed at `~/.config/adrop/fcm-service-account.json`,
-   which didn't exist under that name.
+   (`~/dotfiles/systemd/user/adrop-relay.service`) was enabled but crash-looping
+   — it pointed at `~/.config/adrop/fcm-service-account.json`, which didn't
+   exist under that name.
 5. **`google-services.json` was a placeholder:** the committed (gitignored)
-   `android/app/google-services.json` had `project_id: "adrop-dummy"`, while
-   the relay's service-account key was for the real project `adrop-369fc`.
-   Even with everything else fixed, a token minted under the dummy project
-   is meaningless to a relay authenticating as a different project — FCM
-   rejects the send. This was the deepest blocker: no amount of code fixing
-   helps if client and server disagree on which Firebase project they're in.
+   `android/app/google-services.json` had `project_id: "adrop-dummy"`, while the
+   relay's service-account key was for the real project `adrop-369fc`. Even with
+   everything else fixed, a token minted under the dummy project is meaningless
+   to a relay authenticating as a different project — FCM rejects the send. This
+   was the deepest blocker: no amount of code fixing helps if client and server
+   disagree on which Firebase project they're in.
 
 A red herring along the way: the phone's logcat was full of
 `com.google.android.gms` `BadAuthentication` errors on an unrelated Google
@@ -163,22 +172,22 @@ successfully once (5) was fixed, `BadAuthentication` spam and all.
 
 ### How it was fixed
 
-- `internal/daemon/send.go`: `dialPeer` now captures the peer's Hello reply
-  and calls `d.store.UpdateFcmToken(fp, theirHello.FcmToken)`, matching what
-  the inbound path already did.
+- `internal/daemon/send.go`: `dialPeer` now captures the peer's Hello reply and
+  calls `d.store.UpdateFcmToken(fp, theirHello.FcmToken)`, matching what the
+  inbound path already did.
 - `android/.../feature/pair/PairViewModel.kt` and
   `android/.../feature/receive/ReceiveForegroundService.kt`: both now set
-  `fcmToken = FcmTokenStore.load(context)` in their Hello, same as the
-  existing send path.
+  `fcmToken = FcmTokenStore.load(context)` in their Hello, same as the existing
+  send path.
 - `android/.../AdropApplication.kt`: added `fetchFcmToken()`, called from
   `onCreate()`, which proactively fetches and caches the current token via
   `FirebaseMessaging.getInstance().token` instead of only reacting to
   `onNewToken`.
-- Symlinked `~/.config/adrop/fcm-service-account.json` →  the real
+- Symlinked `~/.config/adrop/fcm-service-account.json` → the real
   `adrop-369fc-firebase-adminsdk-*.json` service-account key so the existing
   `adrop-relay.service` unit could find it.
-- Replaced `android/app/google-services.json` with the real config for
-  project `adrop-369fc`, matching the relay's service account.
+- Replaced `android/app/google-services.json` with the real config for project
+  `adrop-369fc`, matching the relay's service account.
 
 ### Verified end-to-end on real hardware
 
@@ -187,6 +196,7 @@ dial SM-S721B failed (connection refused); sending FCM wake via relay
 FCM wake sent; waiting up to 15s for phone to open receive window…
 phone SM-S721B woke up; connected at 192.168.0.12:7777
 ```
+
 Phone's receive window was closed; direct dial failed as expected; wake
 round-tripped through FCM and the phone opened its window and accepted the
 connection within ~1s.
@@ -197,32 +207,33 @@ While debugging the above, three network edge cases were checked on a real
 laptop+phone pair:
 
 - **Multiple active interfaces / VPN / Docker bridges confusing
-  `detectLANIP()`:** ruled out on the machine tested (only `wlan0` present).
-  Not a bug, but worth re-checking on a machine that actually has a VPN or
-  Docker running.
-- **PC and phone on different subnets:** confirmed as the direct cause of
-  one `connection refused` — the phone had roamed onto a different network
-  (`10.152.x.x`, likely mobile data) than the PC's stored pairing (`192.168.0.x`).
-  This is why the FCM-wake chain above matters: it's the intended recovery
-  path for exactly this situation.
-- **`avahi-daemon` disabled:** mDNS address healing
-  (`internal/mdns`) was completely inert because `avahi-daemon.service` was
-  disabled on the laptop. Fixed operationally (`systemctl --user enable
-  --now avahi-daemon`), not a code change.
+  `detectLANIP()`:** ruled out on the machine tested (only `wlan0` present). Not
+  a bug, but worth re-checking on a machine that actually has a VPN or Docker
+  running.
+- **PC and phone on different subnets:** confirmed as the direct cause of one
+  `connection refused` — the phone had roamed onto a different network
+  (`10.152.x.x`, likely mobile data) than the PC's stored pairing
+  (`192.168.0.x`). This is why the FCM-wake chain above matters: it's the
+  intended recovery path for exactly this situation.
+- **`avahi-daemon` disabled:** mDNS address healing (`internal/mdns`) was
+  completely inert because `avahi-daemon.service` was disabled on the laptop.
+  Fixed operationally (`systemctl --user enable --now avahi-daemon`), not a code
+  change.
 
 ## Environment variables
 
-| Variable             | Purpose                                  | Default                        |
-| -------------------- | ---------------------------------------- | ------------------------------ |
-| `ADROP_CONFIG_DIR`   | Config/state directory                   | `~/.config/adrop`              |
-| `ADROP_SOCKET`       | CLI↔daemon Unix socket path              | `$XDG_RUNTIME_DIR/adrop.sock`  |
-| `ADROP_PORT`         | Peer TLS listen port                     | `53127`                        |
-| `ADROP_NAME`         | Advertised device name (overrides hostname) | system hostname             |
-| `ADROP_ADVERTISE_IP` | LAN IP advertised in the pairing QR      | auto-detected (non-loopback)   |
-| `ADROP_DOWNLOAD_DIR` | Directory where received files land      | `~/Downloads`                  |
+| Variable             | Purpose                                     | Default                       |
+| -------------------- | ------------------------------------------- | ----------------------------- |
+| `ADROP_CONFIG_DIR`   | Config/state directory                      | `~/.config/adrop`             |
+| `ADROP_SOCKET`       | CLI↔daemon Unix socket path                 | `$XDG_RUNTIME_DIR/adrop.sock` |
+| `ADROP_PORT`         | Peer TLS listen port                        | `53127`                       |
+| `ADROP_NAME`         | Advertised device name (overrides hostname) | system hostname               |
+| `ADROP_ADVERTISE_IP` | LAN IP advertised in the pairing QR         | auto-detected (non-loopback)  |
+| `ADROP_DOWNLOAD_DIR` | Directory where received files land         | `~/Downloads`                 |
 
-**`ADROP_NAME`** is useful when the hostname is not descriptive (e.g. rename the PC
-from `archlinux` to `thinkpad-x1` without changing the system hostname):
+**`ADROP_NAME`** is useful when the hostname is not descriptive (e.g. rename the
+PC from `archlinux` to `thinkpad-x1` without changing the system hostname):
+
 ```sh
 ADROP_NAME=thinkpad-x1 adrop daemon
 # or, in the systemd unit override:
@@ -231,7 +242,9 @@ systemctl --user edit adrop
 #   Environment=ADROP_NAME=thinkpad-x1
 ```
 
-**`ADROP_PORT`** lets you run a second daemon instance or avoid firewall conflicts:
+**`ADROP_PORT`** lets you run a second daemon instance or avoid firewall
+conflicts:
+
 ```sh
 ADROP_PORT=8877 adrop daemon
 ```
@@ -297,6 +310,7 @@ ANDROID_SDK_ROOT=/home/shafed/Android/Sdk \
 After pairing, verify end-to-end before declaring it done:
 
 1. **Verify pairing stored correctly on PC:**
+
    ```sh
    adrop devices
    # Expected: name=<phone-model>, addr=<phone-LAN-IP>:7777
@@ -304,16 +318,19 @@ After pairing, verify end-to-end before declaring it done:
    ```
 
 2. **Verify PC → phone transfer:**
-   - On phone: open the adrop app → tap "Open to receive" (starts receive window).
+   - On phone: open the adrop app → tap "Open to receive" (starts receive
+     window).
    - On PC: `adrop send <phone-name> /path/to/file.pdf`
    - Verify the file appears in phone Downloads + notification fires.
 
 3. **Verify phone → PC transfer:**
-   - Ensure PC daemon is running (`adrop status` or `systemctl --user status adrop`).
+   - Ensure PC daemon is running (`adrop status` or
+     `systemctl --user status adrop`).
    - On phone: use the Send screen → pick a file → choose `pc` → send.
    - Verify the file appears in `~/Downloads` on the PC.
 
 4. **Verify clipboard PC → phone:**
+
    ```sh
    echo "test clipboard" | wl-copy
    adrop clip <phone-name>
@@ -325,8 +342,8 @@ After pairing, verify end-to-end before declaring it done:
    - On PC: `wl-paste` should return the copied text.
 
 6. **Confirm auto-rename on collision:**
-   - Send the same filename twice. Second copy must arrive as `file (1).ext`, not
-     overwriting the first.
+   - Send the same filename twice. Second copy must arrive as `file (1).ext`,
+     not overwriting the first.
 
 7. **Confirm revocation works:**
    ```sh
@@ -338,58 +355,62 @@ After pairing, verify end-to-end before declaring it done:
 ## Protocol wire format (interop contract)
 
 The Go daemon (`internal/proto/proto.go`) and Android codec
-(`android/.../data/proto/Proto.kt`) must agree on ALL of the following. Any drift
-breaks interop. These are pinned by golden tests on both sides.
+(`android/.../data/proto/Proto.kt`) must agree on ALL of the following. Any
+drift breaks interop. These are pinned by golden tests on both sides.
 
 ### Framing
 
 Every message is laid out as:
+
 ```
 [4 bytes big-endian uint32 : JSON header byte length]
 [JSON header bytes, UTF-8]
 [raw payload bytes — exactly Header.length bytes, absent when length == 0]
 ```
 
-There is **no separator** between the JSON header and the payload — payload bytes
-start immediately at byte offset `4 + jsonHeaderLength`.
+There is **no separator** between the JSON header and the payload — payload
+bytes start immediately at byte offset `4 + jsonHeaderLength`.
 
 ### JSON keys (Go struct tags → exact wire names)
 
-| Field          | JSON key       | Notes |
-| -------------- | -------------- | ----- |
-| Type           | `"type"`       | always present |
-| Version        | `"version"`    | hello only; omitted on other types |
-| Fingerprint    | `"fingerprint"`| hello only; 64-char lowercase hex |
-| Name           | `"name"`       | hello only |
-| Addr           | `"addr"`       | hello only; `"host:port"` |
-| Kind           | `"kind"`       | session_start only; `"files"` or `"clipboard"` |
-| Files          | `"files"`      | array of FileMeta; session_start (kind=files) only |
-| FileIndex      | `"file_index"` | **snake_case**; file_header, chunk, file_end |
-| MIME           | `"mime"`       | clipboard message only |
-| OK             | `"ok"`         | ack only; **absent when false** (omitempty) |
-| Error          | `"error"`      | ack only; absent when empty |
-| Length         | `"length"`     | messages with a payload; absent when 0 |
-| BytesDone      | `"bytes_done"` | progress messages only |
-| TotalBytes     | `"total_bytes"`| progress messages only |
+| Field       | JSON key        | Notes                                              |
+| ----------- | --------------- | -------------------------------------------------- |
+| Type        | `"type"`        | always present                                     |
+| Version     | `"version"`     | hello only; omitted on other types                 |
+| Fingerprint | `"fingerprint"` | hello only; 64-char lowercase hex                  |
+| Name        | `"name"`        | hello only                                         |
+| Addr        | `"addr"`        | hello only; `"host:port"`                          |
+| Kind        | `"kind"`        | session_start only; `"files"` or `"clipboard"`     |
+| Files       | `"files"`       | array of FileMeta; session_start (kind=files) only |
+| FileIndex   | `"file_index"`  | **snake_case**; file_header, chunk, file_end       |
+| MIME        | `"mime"`        | clipboard message only                             |
+| OK          | `"ok"`          | ack only; **absent when false** (omitempty)        |
+| Error       | `"error"`       | ack only; absent when empty                        |
+| Length      | `"length"`      | messages with a payload; absent when 0             |
+| BytesDone   | `"bytes_done"`  | progress messages only                             |
+| TotalBytes  | `"total_bytes"` | progress messages only                             |
 
-**FileMeta keys:** `"name"` (string), `"size"` (int64), `"sha256"` (64-char lowercase hex).
+**FileMeta keys:** `"name"` (string), `"size"` (int64), `"sha256"` (64-char
+lowercase hex).
 
 ### Omitempty behaviour
 
 Go's `omitempty` tag omits zero values:
+
 - `"ok": false` → **absent** (Go zero value for bool)
 - `"file_index": 0` → **absent** (Go zero value for int)
 - `"version": 0` → **absent**
 - empty string, 0 numeric, `null` / nil slice → **absent**
 
-Android's codec must match: use `null` for absent optional fields and configure the
-JSON serializer with `encodeDefaults = false, explicitNulls = false`.
+Android's codec must match: use `null` for absent optional fields and configure
+the JSON serializer with `encodeDefaults = false, explicitNulls = false`.
 
 ### Fingerprint format
 
 ```
 fingerprint = hex(sha256(certificate_DER_bytes))
 ```
+
 - **Input:** raw DER (binary) bytes of the X.509 self-signed certificate.
 - **Hash:** SHA-256 (32 bytes → 64 hex characters).
 - **Encoding:** lowercase hex, exactly 64 characters, **no colons, no spaces**.
@@ -402,21 +423,21 @@ certificate thumbprint display format, not the wire format).
 
 ### Go tests (all pass under `make test` and `make race`)
 
-| File | Tests | What's covered |
-|------|-------|----------------|
-| `internal/proto/proto_test.go` | 3 | Write/read roundtrip, control messages, oversize header rejection |
-| `internal/pairing/pairing_test.go` | existing | QR encode/decode |
-| `internal/config/config_test.go` | existing | Store open, device CRUD |
-| `internal/daemon/integration_test.go` | 4 | Pair+file transfer, collision rename, clipboard push, untrusted peer rejection |
-| `internal/daemon/integration_extra_test.go` | 10 | Bidirectional transfer, multi-file+clipboard sequence, empty file (0 bytes), unknown device error, bidirectional clipboard, large-file SHA-256 integrity, concurrent pairs isolation, progress callback, multi-collision rename, send after context cancel |
-| `internal/daemon/pairing_test.go` | 3 | `resolvePeerAddr` unit (6 sub-cases), paired-port storage, self-heal-addr regression |
+| File                                        | Tests    | What's covered                                                                                                                                                                                                                                             |
+| ------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `internal/proto/proto_test.go`              | 3        | Write/read roundtrip, control messages, oversize header rejection                                                                                                                                                                                          |
+| `internal/pairing/pairing_test.go`          | existing | QR encode/decode                                                                                                                                                                                                                                           |
+| `internal/config/config_test.go`            | existing | Store open, device CRUD                                                                                                                                                                                                                                    |
+| `internal/daemon/integration_test.go`       | 4        | Pair+file transfer, collision rename, clipboard push, untrusted peer rejection                                                                                                                                                                             |
+| `internal/daemon/integration_extra_test.go` | 10       | Bidirectional transfer, multi-file+clipboard sequence, empty file (0 bytes), unknown device error, bidirectional clipboard, large-file SHA-256 integrity, concurrent pairs isolation, progress callback, multi-collision rename, send after context cancel |
+| `internal/daemon/pairing_test.go`           | 3        | `resolvePeerAddr` unit (6 sub-cases), paired-port storage, self-heal-addr regression                                                                                                                                                                       |
 
 ### Android tests (pass under `./gradlew testDebugUnitTest`)
 
-| File | Tests | What's covered |
-|------|-------|----------------|
-| `ProtoTest.kt` | 9 | Round-trips, golden JSON key for file_index, oversize/zero header rejection, EOF handling |
-| `ProtoGoldenTest.kt` | 20 | Exact JSON key names for every field, 4-byte big-endian framing, fingerprint lowercase-hex format, golden byte vectors for session_end and hello, Go-style round-trip decode, omitempty ok=false absent, ack error key name |
+| File                 | Tests | What's covered                                                                                                                                                                                                              |
+| -------------------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ProtoTest.kt`       | 9     | Round-trips, golden JSON key for file_index, oversize/zero header rejection, EOF handling                                                                                                                                   |
+| `ProtoGoldenTest.kt` | 20    | Exact JSON key names for every field, 4-byte big-endian framing, fingerprint lowercase-hex format, golden byte vectors for session_end and hello, Go-style round-trip decode, omitempty ok=false absent, ack error key name |
 
 ## Next steps (priority order)
 
@@ -425,12 +446,14 @@ certificate thumbprint display format, not the wire format).
    Downloads via MediaStore + notification fires.
 2. **[VERIFY] phone → PC transfer.** Use the app's Send screen (SAF file pick →
    choose `pc` → send). Confirm it lands in `~/Downloads` on the PC.
-3. **[VERIFY] clipboard both directions.** PC `adrop clip <phone>` and the phone's
-   clipboard-send button.
-4. **[UX] Receive window duration.** Confirm the 5-min window + Stop action work;
-   consider surfacing remaining time in the foreground-service notification.
-5. **[CLEANUP] Device naming.** Phone pairs as model `SM-S721B`; PC uses hostname.
-   `ADROP_NAME` env var overrides PC name. Consider surfacing this in app settings.
+3. **[VERIFY] clipboard both directions.** PC `adrop clip <phone>` and the
+   phone's clipboard-send button.
+4. **[UX] Receive window duration.** Confirm the 5-min window + Stop action
+   work; consider surfacing remaining time in the foreground-service
+   notification.
+5. **[CLEANUP] Device naming.** Phone pairs as model `SM-S721B`; PC uses
+   hostname. `ADROP_NAME` env var overrides PC name. Consider surfacing this in
+   app settings.
 6. **[ROBUSTNESS] IP changes.** Stored addr is a fixed IP; on DHCP change, the
    self-heal-on-inbound mechanism corrects the port automatically on the next
    transfer. Verify on real devices after a DHCP renewal.
@@ -442,13 +465,13 @@ certificate thumbprint display format, not the wire format).
 ## Gotchas learned
 
 - Changing the PC identity (e.g. Ed25519→ECDSA) invalidates all existing QRs and
-  phone pairings. Delete `~/.config/adrop/{identity.*,devices.json}`, restart the
-  daemon, `pm clear` the phone app, and **re-pair with a freshly shown QR**.
+  phone pairings. Delete `~/.config/adrop/{identity.*,devices.json}`, restart
+  the daemon, `pm clear` the phone app, and **re-pair with a freshly shown QR**.
 - The running daemon caches `devices.json`; edit it only while the daemon is
   stopped (`systemctl --user stop adrop`).
-- Android keystore keys are opaque (no `ECPrivateKey`); declare `.setDigests(...)`
-  or TLS signing fails at handshake.
-- `wl-copy` / `wl-paste` require an active Wayland session; they fail in headless
-  or SSH-only environments. File transfer works without them.
+- Android keystore keys are opaque (no `ECPrivateKey`); declare
+  `.setDigests(...)` or TLS signing fails at handshake.
+- `wl-copy` / `wl-paste` require an active Wayland session; they fail in
+  headless or SSH-only environments. File transfer works without them.
 - `notify-send` requires `libnotify` and a running notification daemon; it fails
   silently if absent (transfers still complete).
