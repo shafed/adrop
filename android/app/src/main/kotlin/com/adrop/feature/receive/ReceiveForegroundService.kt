@@ -33,6 +33,7 @@ import com.adrop.R
 import com.adrop.data.identity.IdentityStore
 import com.adrop.data.proto.*
 import com.adrop.data.trust.TrustRepository
+import com.adrop.feature.fcm.FcmTokenStore
 import com.adrop.net.mdns.MdnsManager
 import com.adrop.net.session.*
 import com.adrop.net.tls.PinningTrustManager
@@ -284,6 +285,7 @@ class ReceiveForegroundService : Service() {
                     fingerprint = identity.fingerprint,
                     name        = Build.MODEL,
                     addr        = "${localLanIp()}:$LISTEN_PORT",
+                    fcmToken    = FcmTokenStore.load(applicationContext),
                 ))
 
                 // Receive session. The transfer is already counted as active by

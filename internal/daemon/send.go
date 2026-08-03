@@ -143,10 +143,12 @@ func (d *Daemon) dialPeer(ctx context.Context, target string) (*tls.Conn, config
 		conn.Close()
 		return nil, dev, err
 	}
-	if _, err := proto.ReadHeader(conn); err != nil { // their hello
+	theirHello, err := proto.ReadHeader(conn)
+	if err != nil {
 		conn.Close()
 		return nil, dev, err
 	}
+	d.store.UpdateFcmToken(fp, theirHello.FcmToken)
 	return conn, dev, nil
 }
 

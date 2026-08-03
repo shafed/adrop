@@ -10,6 +10,7 @@ import com.adrop.data.proto.MsgType
 import com.adrop.data.proto.PROTOCOL_VERSION
 import com.adrop.data.proto.writeControl
 import com.adrop.data.trust.TrustRepository
+import com.adrop.feature.fcm.FcmTokenStore
 import com.adrop.net.tls.PinningTrustManager
 import com.adrop.net.transport.dial
 import com.adrop.net.transport.localLanIp
@@ -91,13 +92,16 @@ class PairViewModel(
             val out = socket.outputStream.buffered()
             val inp = socket.inputStream.buffered()
 
-            // Send Hello so the PC's pairing window pins our cert.
+            // Send Hello so the PC's pairing window pins our cert. Include our
+            // FCM token here too, so the PC can wake us later even if we never
+            // initiate a send to it ourselves.
             writeControl(out, Header(
                 type        = MsgType.HELLO,
                 version     = PROTOCOL_VERSION,
                 fingerprint = identity.fingerprint,
                 name        = android.os.Build.MODEL,
                 addr        = "${localLanIp()}:${DEFAULT_LISTEN_PORT}",
+                fcmToken    = FcmTokenStore.load(context),
             ))
 
             // Read their Hello in return.
