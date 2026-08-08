@@ -72,6 +72,34 @@ Runtime dependencies: `wl-clipboard` (`wl-copy`/`wl-paste`) for clipboard,
 `libnotify` (`notify-send`) for notifications. Neither is required for file
 transfer.
 
+### FCM wake relay (optional)
+
+When a direct dial to the phone fails, the daemon asks a local relay to send an
+FCM push so the phone opens its receive window, then retries. The relay is
+opt-in because it needs a Firebase service-account key:
+
+```sh
+make relay-install      # builds adrop-relay, installs the binary + user unit
+cp <service-account>.json ~/.config/adrop/fcm-service-account.json
+systemctl --user daemon-reload
+systemctl --user enable --now adrop-relay
+```
+
+The relay listens on **127.0.0.1:8080** only — `/wake` is unauthenticated and
+pushes to whatever FCM token it is given, so it must not be reachable from the
+LAN. The daemon finds it via `ADROP_RELAY` (set to `http://localhost:8080` in
+the packaged unit).
+
+`adrop.service` declares `Wants=adrop-relay.service`, so the relay comes up with
+the daemon once it is enabled. The dependency is deliberately weak: with no
+relay installed the daemon still starts and simply has no wake fallback. The
+relay unit carries `ConditionPathExists=` on the key, so a missing key makes
+systemd skip it instead of crash-looping.
+
+**If wake stops working,** check the relay first — `systemctl --user status
+adrop-relay`. A stopped relay shows up in the daemon's journal as
+`FCM wake failed: Post "http://localhost:8080/wake": … connection refused`.
+
 ### GUI
 
 A small drag-drop window for the PC side — drop files onto it to send to the

@@ -1,0 +1,21 @@
+[Unit]
+Description=adrop-relay — FCM wake relay for adrop
+Documentation=https://github.com/shafed/adrop
+After=network-online.target
+Wants=network-online.target
+# Without a Firebase service-account key the relay exits immediately, which
+# Restart=on-failure would turn into a crash loop. Skip the unit instead: FCM
+# wake is optional, and adrop.service only Wants= this one.
+ConditionPathExists=%h/.config/adrop/fcm-service-account.json
+
+[Service]
+Type=simple
+# Loopback only: /wake is unauthenticated and sends a push to any FCM token it
+# is handed, so it must not be reachable from the LAN. The daemon talks to it
+# via ADROP_RELAY=http://localhost:8080.
+ExecStart=%h/.local/bin/adrop-relay -key %h/.config/adrop/fcm-service-account.json -addr 127.0.0.1:8080
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -2,6 +2,12 @@
 Description=adrop — AirDrop-like file & clipboard transfer daemon
 Documentation=https://github.com/shafed/adrop
 After=graphical-session.target
+# FCM wake posts to the relay on localhost, and a stopped relay silently turns
+# wake off — the daemon only finds out when a send fails. Wants= is deliberately
+# weak: if the relay isn't installed (or has no key), the daemon still starts and
+# simply has no wake fallback.
+Wants=adrop-relay.service
+After=adrop-relay.service
 
 [Service]
 Type=simple

@@ -2,6 +2,7 @@ BINARY := adrop
 # The resident daemon runs from its own CGO-free binary so the long-lived
 # service never depends on the X11/GL libraries the GUI links (SPEC_GUI.md §3.1).
 DAEMON_BINARY := adrop-daemon
+RELAY_BINARY := adrop-relay
 PREFIX ?= $(HOME)/.local
 BINDIR := $(PREFIX)/bin
 UNITDIR := $(HOME)/.config/systemd/user
@@ -9,9 +10,10 @@ UNITDIR := $(HOME)/.config/systemd/user
 DOLPHIN_DIR := $(HOME)/.local/share/kio/servicemenus
 APPS_DIR := $(HOME)/.local/share/applications
 
-.PHONY: all build build-daemon build-headless test test-gui vet vet-gui race install \
-        install-headless uninstall clean dolphin-install dolphin-uninstall \
-        gui-install gui-uninstall
+.PHONY: all build build-daemon build-relay build-headless test test-gui vet \
+        vet-gui race install install-headless relay-install relay-uninstall \
+        uninstall clean dolphin-install dolphin-uninstall gui-install \
+        gui-uninstall
 
 all: build
 
@@ -26,6 +28,11 @@ build:
 # change, and on a Wayland-only box with no X11 client libraries installed.
 build-daemon:
 	CGO_ENABLED=0 go build -o $(DAEMON_BINARY) ./cmd/adrop
+
+# build-relay produces the FCM wake relay. Optional: it only matters if you use
+# FCM wake, and it needs a Firebase service-account key at run time.
+build-relay:
+	CGO_ENABLED=0 go build -o $(RELAY_BINARY) ./cmd/adrop-relay
 
 # build-headless produces the same CGO-free binary under the plain `adrop` name,
 # for machines with no display stack. It has no window, so a bare `adrop` prints
@@ -74,12 +81,29 @@ install-headless: build-headless
 	@echo "  systemctl --user daemon-reload"
 	@echo "  systemctl --user enable --now adrop"
 
+# relay-install is opt-in: FCM wake needs a Firebase service-account key, which
+# not every install has. adrop.service Wants= the relay unit, so once this is
+# installed and enabled the relay comes up with the daemon; without it the
+# daemon starts anyway and just has no wake fallback.
+relay-install: build-relay
+	install -Dm755 $(RELAY_BINARY) $(BINDIR)/$(RELAY_BINARY)
+	install -Dm644 packaging/systemd/adrop-relay.service $(UNITDIR)/adrop-relay.service
+	@echo "Installed the wake relay. It needs a Firebase service-account key at"
+	@echo "  ~/.config/adrop/fcm-service-account.json"
+	@echo "(the unit is skipped while that file is missing). Then:"
+	@echo "  systemctl --user daemon-reload"
+	@echo "  systemctl --user enable --now adrop-relay"
+
+relay-uninstall:
+	systemctl --user disable --now adrop-relay 2>/dev/null || true
+	rm -f $(BINDIR)/$(RELAY_BINARY) $(UNITDIR)/adrop-relay.service
+
 uninstall:
 	systemctl --user disable --now adrop 2>/dev/null || true
 	rm -f $(BINDIR)/$(BINARY) $(BINDIR)/$(DAEMON_BINARY) $(UNITDIR)/adrop.service
 
 clean:
-	rm -f $(BINARY) $(DAEMON_BINARY)
+	rm -f $(BINARY) $(DAEMON_BINARY) $(RELAY_BINARY)
 
 # Both .desktop installs rewrite Exec= to an absolute path: the desktop session's
 # PATH does not necessarily include $(BINDIR) (systemd --user starts with a bare
