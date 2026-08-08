@@ -2,8 +2,9 @@
 
 AirDrop-like file & clipboard transfer over a key-pinned TLS LAN connection.
 This repository implements the **PC side** (Arch Linux) from
-[`SPEC.md`](SPEC.md): a single Go binary that is both the resident **daemon**
-and a thin **CLI**.
+[`SPEC.md`](SPEC.md): a single Go binary that is the **desktop app**, the
+resident **daemon** and a thin **CLI**. Running `adrop` with no arguments opens
+the drag-drop window; the CLI lives under explicit subcommands.
 
 The Android side lives in `android/`. Because the daemon is symmetric — it both
 serves and originates transfers — two PCs can pair and exchange files directly,
@@ -32,53 +33,63 @@ which is also how the protocol is integration-tested.
 ## Build & install
 
 ```sh
-make build              # produces ./adrop
+make build              # produces ./adrop (with the GUI)
 make test               # unit + integration tests
 make race               # tests under the race detector
 make install            # installs to ~/.local/bin + systemd user unit
+make gui-install        # add the app-menu launcher
 systemctl --user daemon-reload
 systemctl --user enable --now adrop
 ```
+
+`make build` includes the GUI, so it needs `CGO_ENABLED=1`, a C toolchain and
+Fyne's Linux prerequisites: `libgl`/`mesa`, `libxcursor`, `libxrandr`,
+`libxinerama`, `libxi`, `libxxf86vm` dev headers.
+
+On a machine with no display stack, build the daemon/CLI only:
+
+```sh
+make build-headless     # static, CGO_ENABLED=0, no Fyne dependency
+make install-headless
+```
+
+That binary has no window, so a bare `adrop` prints usage there; everything
+else — daemon, CLI, systemd unit — is identical.
 
 Runtime dependencies: `wl-clipboard` (`wl-copy`/`wl-paste`) for clipboard,
 `libnotify` (`notify-send`) for notifications. Neither is required for file
 transfer.
 
-### GUI (optional)
+### GUI
 
 A small drag-drop window for the PC side — drop files onto it to send to the
 last-used (or chosen) peer, paste a `file:///` path, push the clipboard, and
 watch incoming transfers live. It's a thin IPC client of the daemon, exactly
 like the CLI.
 
-```sh
-make build-gui          # CGO_ENABLED=1, builds ./adrop with the GUI subcommand
-make install-gui        # install the GUI-enabled binary
-make gui-install        # add the app-menu launcher (~/.local/share/applications)
-adrop gui               # or launch from the app menu
-```
+Launch it from the app menu (`make gui-install`) or by running `adrop` with no
+arguments. If the daemon isn't running, the window says so and offers a
+**Start daemon** button rather than failing.
 
-The default `make build` stays static (`CGO_ENABLED=0`) and has **no** GUI/Fyne
-dependency; the GUI is isolated behind a `gui` build tag. The plain binary's
-`adrop gui` prints a hint to rebuild with `make build-gui`.
-
-GUI build dependencies (only for `make build-gui`): a C toolchain plus
-`libgl`/`mesa`, `libxcursor`, `libxrandr`, `libxinerama`, `libxi`, `libxxf86vm`
-dev headers (Fyne's Linux prerequisites).
+The GUI is isolated behind a `gui` build tag, which `make build` sets; only
+`make build-headless` drops it. There is no `adrop gui` subcommand — a bare
+`adrop` is the way to open the window.
 
 ## Usage
 
 ```sh
+adrop                         # open the drag-drop window (default)
 adrop daemon                  # run the resident daemon (normally via systemd)
 adrop status                  # show this device's identity & trusted count
 adrop pair show               # display pairing QR, wait for a peer to pair
 adrop pair add <uri>          # trust a scanned adrop://pair?d=... URI
 adrop devices                 # list trusted devices
 adrop revoke <name|fp-prefix> # revoke (untrust) a device
-adrop send <peer> <file...>   # send files (one session) to a peer
-adrop clip <peer> [text]      # push clipboard (or given text) to a peer
-adrop gui                     # open the drag-drop window (GUI builds only)
+adrop send [<peer>] <file...> # send files (one session) to a peer
+adrop clip [<peer>] [text]    # push clipboard (or given text) to a peer
 ```
+
+`<peer>` is optional after the first send — it defaults to the last-used peer.
 
 `<peer>` is a device name or a fingerprint prefix (≥ 8 hex chars).
 

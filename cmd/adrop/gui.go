@@ -28,10 +28,13 @@ import (
 	"github.com/shafed/adrop/internal/pairing"
 )
 
+// guiAvailable tells main() a bare `adrop` can open a window in this build.
+const guiAvailable = true
+
 // runGUI launches the Fyne drop window. It is a thin IPC client of the daemon:
 // sends dial per-request (reusing roundtrip), and one long-lived CmdSubscribe
 // connection feeds the inbound row.
-func runGUI(_ []string) error {
+func runGUI() error {
 	a := app.NewWithID("dev.adrop.gui")
 	a.Settings().SetTheme(adropTheme{}) // match the phone's Material 3 teal look
 	w := a.NewWindow("adrop")

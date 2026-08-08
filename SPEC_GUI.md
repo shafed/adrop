@@ -9,6 +9,23 @@ identity, trust, and transfer logic.
 This document specifies v1 only. It assumes familiarity with `SPEC.md`,
 `README.md`, and the IPC protocol in `internal/ipc/ipc.go`.
 
+> **Amendment — GUI is now the default mode.** v1 shipped the GUI as strictly
+> opt-in: `make build` was CGO-free and GUI-free, and the window was reached via
+> an `adrop gui` subcommand. That decision has since been **reversed**. The `gui`
+> build tag remains, but the default is inverted:
+>
+> - `make build` is now `CGO_ENABLED=1 -tags gui`; the CGO-free daemon/CLI build
+>   moved to `make build-headless` (`install-headless` alongside it).
+> - A **bare `adrop` opens the window**. The `adrop gui` subcommand was removed;
+>   `Exec=` in the launcher is plain `adrop`.
+> - In a headless build a bare `adrop` prints usage instead — `main.go` branches
+>   on a `guiAvailable` constant declared under each build tag.
+>
+> Everything else below still holds: the GUI remains a thin IPC client, the
+> daemon is unchanged, and the CLI subcommands work exactly as specified. The
+> paragraphs marked ⚠️ **superseded** are kept for the reasoning, not the
+> conclusion.
+
 ---
 
 ## 1. Goals & non-goals
@@ -57,7 +74,9 @@ Today, to send from the desktop you either:
 The GUI gives a persistent visual drop target with peer selection, live
 progress, and inline error recovery. **The Dolphin service menu and the CLI are
 unchanged in v1** — they keep working exactly as before. (Re-pointing Dolphin at
-the GUI is a possible v2 follow-up, deliberately deferred.)
+the GUI is a possible v2 follow-up, deliberately deferred.) Both survived the
+GUI-by-default change untouched, since each passes its subcommand explicitly
+(`Exec=adrop send %F`, `ExecStart=… adrop daemon`).
 
 ---
 
@@ -79,6 +98,8 @@ the GUI is a possible v2 follow-up, deliberately deferred.)
 
 - The GUI is launched as **`adrop gui`** — a new subcommand of the existing
   single binary, alongside `daemon`, `send`, etc. (`cmd/adrop/main.go` switch).
+  ⚠️ **Superseded:** the window is now opened by a bare `adrop`; the `gui`
+  subcommand no longer exists.
 - It speaks the **existing IPC protocol** in `internal/ipc`. Sends reuse
   `CmdSendFiles` / `CmdSendClip`; the device list reuses `CmdDevices`; status /
   last-peer reuses `CmdStatus`. **No changes to send-side IPC or daemon send
@@ -91,6 +112,12 @@ the GUI is a possible v2 follow-up, deliberately deferred.)
   except the subscribe stream, which is intentionally long-lived.
 
 ### 3.1 Build-system constraint (must respect) ⚠️
+
+⚠️ **Superseded in part.** The toolkit choice (Fyne) and the `//go:build gui`
+isolation still stand. What changed: the *default* build is now the tagged,
+CGO-enabled one, and the CGO-free daemon/CLI build is the opt-in
+(`make build-headless`). The reasoning below is why the build tag exists at all,
+which is still worth keeping.
 
 The daemon/CLI binary builds with **`CGO_ENABLED=0`** (`Makefile`) — a key
 property (static, lean, no C deps). Choosing `adrop gui` as a *subcommand* of the
@@ -312,7 +339,8 @@ in memory until a send succeeds or the user clears it.
 ## 7. Launch & packaging
 
 - **Subcommand:** `adrop gui` (registered in `cmd/adrop/main.go`, under the
-  `gui` build tag per §3.1).
+  `gui` build tag per §3.1). ⚠️ **Superseded:** removed; a bare `adrop` opens
+  the window, and `Exec=` below is now plain `adrop`.
 - **App launcher entry:** add `packaging/desktop/adrop-gui.desktop`:
   ```ini
   [Desktop Entry]
@@ -329,8 +357,9 @@ in memory until a send succeeds or the user clears it.
   (parallel to the existing `dolphin-install`).
 - The existing `packaging/dolphin/adrop.desktop` (CLI `adrop send %F`) is **left
   unchanged**.
-- `make build` stays `CGO_ENABLED=0` and GUI-free. `make build-gui` builds the
-  GUI-enabled binary.
+- ⚠️ **Superseded:** `make build` now builds the GUI-enabled binary
+  (`CGO_ENABLED=1 -tags gui`); `make build-headless` is the CGO-free daemon/CLI
+  build.
 
 ---
 
@@ -349,6 +378,9 @@ in memory until a send succeeds or the user clears it.
   Users opt in by running `make build-gui` + `make gui-install`. No migration,
   no config changes, no new state files. The daemon change ships in the normal
   binary and is inert until a GUI subscribes.
+  ⚠️ **Superseded:** the GUI is no longer opt-in. `make build` + `make
+  gui-install` is the normal path; opting *out* is `make build-headless`. Still
+  no migration, no config changes, no new state files.
 
 ---
 

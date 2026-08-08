@@ -2,7 +2,7 @@
 Type=Application
 Name=adrop
 Comment=Send files to paired devices
-Exec=adrop gui
+Exec=adrop
 Icon=network-wireless
 Terminal=false
 Categories=Network;FileTransfer;

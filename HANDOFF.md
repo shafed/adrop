@@ -255,8 +255,10 @@ ADROP_PORT=8877 adrop daemon
 
 ```sh
 cd /home/shafed/adrop         # repo root
-make build                    # builds ./adrop binary (CGO_ENABLED=0)
+make build                    # builds ./adrop binary with GUI (CGO_ENABLED=1)
+make build-headless           # daemon/CLI only, static (CGO_ENABLED=0)
 make test                     # unit + integration tests
+make vet-gui                  # vet the GUI sources (plain `make vet` skips them)
 make race                     # tests under Go race detector
 make install                  # copies binary + installs systemd user unit
 
