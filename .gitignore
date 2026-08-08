@@ -1,5 +1,6 @@
 # Build output
 /adrop
+/adrop-daemon
 /adrop-relay
 
 # Go

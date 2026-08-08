@@ -132,6 +132,31 @@ func TestSendRequests(t *testing.T) {
 	}
 }
 
+func TestManageRequests(t *testing.T) {
+	fp := "abcdef0123456789abcdef0123456789"
+	r := renameRequest(fp, "  pixel  ")
+	if r.Cmd != ipc.CmdRename || r.Target != fp || r.Name != "pixel" {
+		t.Errorf("renameRequest = %+v", r)
+	}
+	v := revokeRequest(fp)
+	if v.Cmd != ipc.CmdRevoke || v.Target != fp {
+		t.Errorf("revokeRequest = %+v", v)
+	}
+}
+
+func TestDeviceLabel(t *testing.T) {
+	l := deviceLabel(ipc.DeviceInfo{Name: "phone", Fingerprint: "abcdef0123456789ff", Addr: "10.0.0.2:53127"})
+	if !strings.Contains(l, "phone") || !strings.Contains(l, "10.0.0.2:53127") {
+		t.Errorf("deviceLabel = %q", l)
+	}
+	if strings.Contains(l, "abcdef0123456789f") {
+		t.Errorf("fingerprint not truncated to 16: %q", l)
+	}
+	if !strings.Contains(deviceLabel(ipc.DeviceInfo{Name: "phone"}), "no known address") {
+		t.Error("missing address should be spelled out")
+	}
+}
+
 func TestRecvStatusAndFraction(t *testing.T) {
 	prog := ipc.Event{Kind: "recv-progress", Peer: "phone", File: "p.jpg", BytesDone: 70, Total: 100}
 	s, ok := recvStatus(prog)

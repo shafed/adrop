@@ -36,15 +36,26 @@ which is also how the protocol is integration-tested.
 make build              # produces ./adrop (with the GUI)
 make test               # unit + integration tests
 make race               # tests under the race detector
-make install            # installs to ~/.local/bin + systemd user unit
+make install            # installs both binaries to ~/.local/bin + systemd unit
 make gui-install        # add the app-menu launcher
 systemctl --user daemon-reload
 systemctl --user enable --now adrop
 ```
 
-`make build` includes the GUI, so it needs `CGO_ENABLED=1`, a C toolchain and
-Fyne's Linux prerequisites: `libgl`/`mesa`, `libxcursor`, `libxrandr`,
-`libxinerama`, `libxi`, `libxxf86vm` dev headers.
+`make install` installs **two** binaries from the same source:
+
+- `adrop` — the window and the CLI. Built with the GUI, so it needs
+  `CGO_ENABLED=1`, a C toolchain and Fyne's Linux prerequisites: `libgl`/`mesa`,
+  `libxcursor`, `libxrandr`, `libxinerama`, `libxi`, `libxxf86vm` dev headers.
+- `adrop-daemon` — what the systemd unit runs (`ExecStart=…/adrop-daemon
+  daemon`). Static and `CGO_ENABLED=0`, so the resident service does not depend
+  on the X11/GL libraries the GUI links and keeps running across a mesa/xorg
+  change.
+
+**Upgrading from a single-binary install:** the unit's `ExecStart` changed, so
+run `systemctl --user daemon-reload && systemctl --user restart adrop` after
+`make install`. A stale `~/.local/bin/adrop` left over from before is harmless
+(`make uninstall` removes both).
 
 On a machine with no display stack, build the daemon/CLI only:
 
@@ -54,7 +65,8 @@ make install-headless
 ```
 
 That binary has no window, so a bare `adrop` prints usage there; everything
-else — daemon, CLI, systemd unit — is identical.
+else — daemon, CLI, systemd unit — is identical. `install-headless` puts the one
+CGO-free build under both names, so the unit's `ExecStart` works unchanged.
 
 Runtime dependencies: `wl-clipboard` (`wl-copy`/`wl-paste`) for clipboard,
 `libnotify` (`notify-send`) for notifications. Neither is required for file
@@ -70,6 +82,14 @@ like the CLI.
 Launch it from the app menu (`make gui-install`) or by running `adrop` with no
 arguments. If the daemon isn't running, the window says so and offers a
 **Start daemon** button rather than failing.
+
+**Managing devices.** The gear button next to the peer dropdown opens the
+device list: each trusted device with its fingerprint and last-known address,
+plus **Add device…** (the pairing QR, same as `adrop pair show`), rename, and
+revoke. Renaming only changes the display name — trust is pinned to the
+fingerprint — and revoke asks for confirmation first. Every action is an IPC
+round-trip to the daemon; if one fails, the dialog shows the error and the list
+is left unchanged.
 
 The GUI is isolated behind a `gui` build tag, which `make build` sets; only
 `make build-headless` drops it. There is no `adrop gui` subcommand — a bare

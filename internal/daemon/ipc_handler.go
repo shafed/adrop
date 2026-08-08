@@ -94,6 +94,13 @@ func (d *Daemon) handleIPC(ctx context.Context, conn net.Conn) {
 		}
 		send(ipc.Response{Line: "revoked", Done: true})
 
+	case ipc.CmdRename:
+		if err := d.store.RenameDevice(req.Target, req.Name); err != nil {
+			send(ipc.Response{Err: err.Error(), Done: true})
+			return
+		}
+		send(ipc.Response{Line: "renamed", Done: true})
+
 	case ipc.CmdSendFiles:
 		target, err := d.resolveTarget(req.Target)
 		if err != nil {

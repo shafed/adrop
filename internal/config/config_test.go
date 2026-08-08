@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"testing"
 )
 
@@ -40,6 +41,74 @@ func TestAddRevokeDevice(t *testing.T) {
 	}
 	if _, ok := s.IsTrusted(fp); ok {
 		t.Fatal("device still trusted after revoke")
+	}
+}
+
+func TestRenameDevice(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := Open(dir)
+	fp := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	other := "9999999999999999999999999999999999999999999999999999999999999999"
+	_ = s.AddDevice(Device{Name: "phone", Fingerprint: fp, Addr: "10.0.0.2:1"})
+	_ = s.AddDevice(Device{Name: "tablet", Fingerprint: other})
+
+	// Rename by name, then by fingerprint prefix.
+	if err := s.RenameDevice("phone", "pixel"); err != nil {
+		t.Fatalf("rename by name: %v", err)
+	}
+	if err := s.RenameDevice(fp[:16], "pixel 9"); err != nil {
+		t.Fatalf("rename by fingerprint prefix: %v", err)
+	}
+
+	// Trust is pinned to the fingerprint, so it must survive both renames.
+	name, ok := s.IsTrusted(fp)
+	if !ok {
+		t.Fatal("device lost trust after rename")
+	}
+	if name != "pixel 9" {
+		t.Fatalf("name = %q, want %q", name, "pixel 9")
+	}
+	if dev, ok := s.Lookup("pixel 9"); !ok || dev.Addr != "10.0.0.2:1" {
+		t.Fatalf("lookup after rename: %+v ok=%v", dev, ok)
+	}
+
+	if err := s.RenameDevice("nosuchdevice", "x"); err == nil {
+		t.Error("renaming an unknown device should fail")
+	}
+	if err := s.RenameDevice("pixel 9", "  "); err == nil {
+		t.Error("renaming to a blank name should fail")
+	}
+	if err := s.RenameDevice("pixel 9", "tablet"); err == nil {
+		t.Error("renaming onto another device's name should fail")
+	}
+
+	// The rename is persisted, not just held in memory.
+	s2, _ := Open(dir)
+	if n, ok := s2.IsTrusted(fp); !ok || n != "pixel 9" {
+		t.Fatalf("rename did not persist: %q ok=%v", n, ok)
+	}
+}
+
+// TestRenameDeviceSaveFailure checks a rename that can't be persisted leaves
+// the in-memory name alone, so the daemon never serves a name that isn't on
+// disk (it would silently revert on the next restart).
+func TestRenameDeviceSaveFailure(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := Open(dir)
+	fp := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	_ = s.AddDevice(Device{Name: "phone", Fingerprint: fp})
+
+	// Read-only config dir: writing the devices.json temp file must fail.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	if err := s.RenameDevice("phone", "pixel"); err == nil {
+		t.Skip("rename succeeded despite a read-only config dir (running as root?)")
+	}
+	if name, _ := s.IsTrusted(fp); name != "phone" {
+		t.Fatalf("name = %q after a failed save, want the original %q", name, "phone")
 	}
 }
 

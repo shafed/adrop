@@ -183,10 +183,14 @@ type Event struct {
 }
 ```
 
-Add
-`Event *Event `json:"event,omitempty"``to`ipc.Response`. The subscribe stream sends `Response{Event:
-...}`messages and **never** sets`Done` until the daemon shuts down or the
-connection drops.
+Add this field to `ipc.Response`:
+
+```go
+Event *Event `json:"event,omitempty"`
+```
+
+The subscribe stream sends `Response{Event: ...}` messages and **never** sets
+`Done` until the daemon shuts down or the connection drops.
 
 ### 4.2 Daemon side (`internal/daemon`)
 

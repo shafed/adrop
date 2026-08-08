@@ -32,6 +32,7 @@ const (
 	CmdPairAdd   Command = "pair-add"       // trust a scanned/typed peer URI
 	CmdDevices   Command = "devices"        // list trusted devices
 	CmdRevoke    Command = "revoke"         // remove a trusted device
+	CmdRename    Command = "rename"         // rename a trusted device (cosmetic)
 	CmdSendFiles Command = "send-files"     // send files to a peer
 	CmdSendClip  Command = "send-clipboard" // push local clipboard to a peer
 	CmdSubscribe Command = "subscribe"      // long-lived: stream receive events
@@ -59,6 +60,9 @@ type Request struct {
 
 	// PairAdd: the scanned "adrop://pair?d=..." URI and optional local name.
 	PairURI string `json:"pair_uri,omitempty"`
+
+	// Rename: the new display name for the device named by Target.
+	Name string `json:"name,omitempty"`
 
 	// SendFiles: absolute paths to send.
 	Files []string `json:"files,omitempty"`

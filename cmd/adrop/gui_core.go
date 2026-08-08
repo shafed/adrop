@@ -83,6 +83,32 @@ func sendClipRequest(peer string) ipc.Request {
 	return ipc.Request{Cmd: ipc.CmdSendClip, Target: peer}
 }
 
+// renameRequest builds the IPC request that renames a trusted device. The
+// device is addressed by its pinned fingerprint so the rename works even when
+// two devices briefly share a display name.
+func renameRequest(fingerprint, newName string) ipc.Request {
+	return ipc.Request{Cmd: ipc.CmdRename, Target: fingerprint, Name: strings.TrimSpace(newName)}
+}
+
+// revokeRequest builds the IPC request that untrusts a device.
+func revokeRequest(fingerprint string) ipc.Request {
+	return ipc.Request{Cmd: ipc.CmdRevoke, Target: fingerprint}
+}
+
+// deviceLabel renders one trusted device for the management list: its name over
+// a short fingerprint and last-known address.
+func deviceLabel(d ipc.DeviceInfo) string {
+	fp := d.Fingerprint
+	if len(fp) > 16 {
+		fp = fp[:16]
+	}
+	addr := d.Addr
+	if addr == "" {
+		addr = "no known address"
+	}
+	return fmt.Sprintf("%s\n%s · %s", d.Name, fp, addr)
+}
+
 // recvStatus renders a one-line human summary of a receive Event for the
 // inbound row. Returns ("", false) for events with nothing to show.
 func recvStatus(e ipc.Event) (string, bool) {

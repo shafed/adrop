@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"image/color"
 	"net"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -30,6 +31,14 @@ import (
 
 // guiAvailable tells main() a bare `adrop` can open a window in this build.
 const guiAvailable = true
+
+// displayAvailable reports whether there is a graphical session to open a
+// window on. Fyne/GLFW abort the process when they can't reach a display
+// instead of returning an error, so `adrop` over SSH has to be caught here —
+// runGUI would never get to return.
+func displayAvailable() bool {
+	return os.Getenv("WAYLAND_DISPLAY") != "" || os.Getenv("DISPLAY") != ""
+}
 
 // runGUI launches the Fyne drop window. It is a thin IPC client of the daemon:
 // sends dial per-request (reusing roundtrip), and one long-lived CmdSubscribe
@@ -78,6 +87,7 @@ type gui struct {
 	win fyne.Window
 
 	peerSelect *widget.Select
+	manageBtn  *widget.Button
 	dropLabel  *widget.Label
 	chooseBtn  *widget.Button
 	clipBtn    *widget.Button
@@ -92,11 +102,14 @@ type gui struct {
 	inBar    *widget.ProgressBar
 	retryBtn *widget.Button
 
-	mu       sync.Mutex
-	peers    []string // device names, in dropdown order
-	staged   []string // last batch's files, kept for Retry on failure
-	pairing  bool     // true while a pairing dialog owns a pair-show request
-	sending  bool     // a send is in flight; serializes the send entry points
+	mu      sync.Mutex
+	peers   []string         // device names, in dropdown order
+	devices []ipc.DeviceInfo // full trusted-device list, for the manage dialog
+	manage  func(error)      // redraws the open manage list; nil when closed
+	staged  []string         // last batch's files, kept for Retry on failure
+	pairing bool             // true while a pairing dialog owns a pair-show request
+	sending bool             // a send is in flight; serializes the send entry points
+
 	stopCh   chan struct{}
 	stopOnce sync.Once
 }
@@ -108,6 +121,7 @@ func newGUI(a fyne.App, w fyne.Window) *gui {
 func (g *gui) content() fyne.CanvasObject {
 	g.peerSelect = widget.NewSelect(nil, func(string) {})
 	g.peerSelect.PlaceHolder = "(no devices)"
+	g.manageBtn = widget.NewButtonWithIcon("", theme.SettingsIcon(), g.openManageDialog)
 
 	g.dropLabel = widget.NewLabel("Drop files here")
 	g.dropLabel.Alignment = fyne.TextAlignCenter
@@ -144,7 +158,7 @@ func (g *gui) content() fyne.CanvasObject {
 
 	body := container.NewVBox(
 		widget.NewLabel("Peer:"),
-		g.peerSelect,
+		container.NewBorder(nil, nil, nil, g.manageBtn, g.peerSelect),
 		g.dropLabel,
 		g.chooseBtn,
 		g.clipBtn,
@@ -189,13 +203,16 @@ func (g *gui) refreshPeers() {
 	// hung daemon would otherwise freeze the window.
 	go func() {
 		var names []string
+		var devs []ipc.DeviceInfo
 		derr := roundtrip(ipc.Request{Cmd: ipc.CmdDevices}, func(r ipc.Response) {
 			for _, d := range r.Devices {
 				names = append(names, d.Name)
+				devs = append(devs, d)
 			}
 		})
 		if derr != nil {
 			g.showDaemonDown(derr)
+			g.notifyManage(derr) // an open manage dialog would otherwise show a stale list
 			return
 		}
 		g.clearDaemonDown()
@@ -210,8 +227,13 @@ func (g *gui) refreshPeers() {
 		fyne.Do(func() {
 			g.mu.Lock()
 			g.peers = names
+			g.devices = devs
+			rebuild := g.manage
 			g.mu.Unlock()
 
+			if rebuild != nil {
+				rebuild(nil) // keep an open manage dialog in step with the daemon
+			}
 			g.peerSelect.Options = names
 			if len(names) == 0 {
 				g.peerSelect.PlaceHolder = "(no devices)"
@@ -228,7 +250,13 @@ func (g *gui) refreshPeers() {
 				g.setSendEnabled(true)
 				g.statusLbl.SetText("")
 				g.pairBtn.Hide()
-				sel := last
+				// A refresh must not move the send target under the user: keep
+				// their pick if it still exists, and only then fall back to the
+				// last-used peer, then the first device.
+				sel := g.peerSelect.Selected
+				if sel == "" || !contains(names, sel) {
+					sel = last
+				}
 				if sel == "" || !contains(names, sel) {
 					sel = names[0]
 				}
@@ -237,6 +265,147 @@ func (g *gui) refreshPeers() {
 			g.peerSelect.Refresh()
 		})
 	}()
+}
+
+// ----- device management (§5.4) -----
+
+// openManageDialog shows the trusted-device list with add / rename / revoke.
+// The daemon stays the single source of truth: every action is an IPC
+// round-trip, and the list is rebuilt from a fresh CmdDevices afterwards, so a
+// rejected action (e.g. a daemon that doesn't know CmdRename) leaves the list
+// untouched and only surfaces the error.
+func (g *gui) openManageDialog() {
+	list := container.NewVBox()
+	status := widget.NewLabel("")
+	status.Wrapping = fyne.TextWrapWord
+
+	addBtn := widget.NewButtonWithIcon("Add device…", theme.ContentAddIcon(), g.openPairDialog)
+	addBtn.Importance = widget.HighImportance
+
+	// rebuild redraws the list from the cached device set, or — when the refresh
+	// that fed it failed — says so and leaves the previous list alone rather than
+	// presenting a stale one as current.
+	rebuild := func(err error) {
+		if err != nil {
+			status.SetText("⚠ " + err.Error())
+			return
+		}
+		g.mu.Lock()
+		devs := g.devices
+		g.mu.Unlock()
+
+		list.RemoveAll()
+		if len(devs) == 0 {
+			list.Add(widget.NewLabel("No paired devices yet."))
+		}
+		for _, d := range devs {
+			name := widget.NewLabel(deviceLabel(d))
+			renameBtn := widget.NewButtonWithIcon("", theme.DocumentCreateIcon(), func() {
+				g.promptRename(d, status)
+			})
+			revokeBtn := widget.NewButtonWithIcon("", theme.DeleteIcon(), func() {
+				g.confirmRevoke(d, status)
+			})
+			actions := container.NewHBox(renameBtn, revokeBtn)
+			list.Add(container.NewBorder(nil, nil, nil, actions, name))
+			list.Add(widget.NewSeparator())
+		}
+		list.Refresh()
+	}
+	rebuild(nil)
+
+	g.mu.Lock()
+	g.manage = rebuild
+	g.mu.Unlock()
+
+	content := container.NewBorder(
+		nil,
+		container.NewVBox(addBtn, status),
+		nil, nil,
+		container.NewVScroll(list),
+	)
+	d := dialog.NewCustom("Devices", "Close", content, g.win)
+	d.Resize(fyne.NewSize(400, 440))
+	d.SetOnClosed(func() {
+		g.mu.Lock()
+		g.manage = nil
+		g.mu.Unlock()
+	})
+	d.Show()
+
+	g.refreshPeers() // pull a fresh list behind the already-visible dialog
+}
+
+// promptRename asks for a new display name and issues CmdRename. The device is
+// addressed by fingerprint, so the rename can't hit the wrong peer.
+func (g *gui) promptRename(dev ipc.DeviceInfo, status *widget.Label) {
+	entry := widget.NewEntry()
+	entry.SetText(dev.Name)
+	form := []*widget.FormItem{widget.NewFormItem("Name", entry)}
+	dialog.ShowForm("Rename device", "Rename", "Cancel", form, func(ok bool) {
+		if !ok {
+			return
+		}
+		newName := strings.TrimSpace(entry.Text)
+		if newName == "" || newName == dev.Name {
+			return
+		}
+		go g.runManageAction(renameRequest(dev.Fingerprint, newName),
+			fmt.Sprintf("Renamed %s to %s.", dev.Name, newName), status)
+	}, g.win)
+}
+
+// confirmRevoke asks before untrusting a device, since revoke is immediate and
+// only undone by pairing again.
+func (g *gui) confirmRevoke(dev ipc.DeviceInfo, status *widget.Label) {
+	msg := fmt.Sprintf("Untrust %s? You won't be able to send to it until you pair again.", dev.Name)
+	dialog.ShowConfirm("Revoke device", msg, func(ok bool) {
+		if !ok {
+			return
+		}
+		go g.runManageAction(revokeRequest(dev.Fingerprint),
+			fmt.Sprintf("Revoked %s.", dev.Name), status)
+	}, g.win)
+}
+
+// notifyManage hands a refresh outcome to an open manage dialog: nil redraws
+// the list, an error is shown in its status line. It is a no-op when no dialog
+// is open.
+func (g *gui) notifyManage(err error) {
+	g.mu.Lock()
+	rebuild := g.manage
+	g.mu.Unlock()
+	if rebuild != nil {
+		fyne.Do(func() { rebuild(err) })
+	}
+}
+
+// runManageAction performs one management round-trip off the UI thread and
+// reports the outcome in the dialog's status line. It always refreshes
+// afterwards: on success to pick up the change, on failure so that a dead
+// daemon surfaces as the window's daemon-not-running state instead of just an
+// error string in the dialog.
+func (g *gui) runManageAction(req ipc.Request, okMsg string, status *widget.Label) {
+	err := roundtrip(req, func(ipc.Response) {})
+
+	g.mu.Lock()
+	open := g.manage != nil
+	g.mu.Unlock()
+	fyne.Do(func() {
+		switch {
+		case open:
+			if err != nil {
+				status.SetText("⚠ " + err.Error())
+				return
+			}
+			status.SetText(okMsg)
+		case err != nil:
+			// The dialog was closed mid-round-trip; a failure must not vanish
+			// with its status label (a success is visible in the dropdown).
+			dialog.ShowError(err, g.win)
+		}
+	})
+	g.refreshPeers()
 }
 
 // ----- pairing / first-run onboarding -----
@@ -746,6 +915,7 @@ func (g *gui) showDaemonDown(err error) {
 		if g.pairBtn != nil {
 			g.pairBtn.Hide()
 		}
+		g.manageBtn.Disable() // every management action needs the daemon
 		g.setSendEnabled(false)
 	})
 }
@@ -753,6 +923,7 @@ func (g *gui) showDaemonDown(err error) {
 func (g *gui) clearDaemonDown() {
 	fyne.Do(func() {
 		g.startBtn.Hide()
+		g.manageBtn.Enable()
 	})
 }
 

@@ -21,10 +21,14 @@ import (
 )
 
 func main() {
-	// No arguments: open the window. A headless build has none, so fall back to
-	// usage rather than failing with runGUI's "rebuild" error.
+	// No arguments: open the window. Fall back to usage when there is nothing to
+	// open — a headless build, or a session with no display (over SSH, say),
+	// where the GUI toolkit would abort the process with a stack trace.
 	if len(os.Args) < 2 {
-		if !guiAvailable {
+		if !guiAvailable || !displayAvailable() {
+			if guiAvailable {
+				fmt.Fprint(os.Stderr, "adrop: no display (DISPLAY/WAYLAND_DISPLAY unset) — no window to open\n\n")
+			}
 			usage()
 			os.Exit(2)
 		}

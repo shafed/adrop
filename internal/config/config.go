@@ -23,6 +23,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -327,6 +328,44 @@ func (s *Store) RemoveDevice(nameOrFp string) (int, error) {
 		}
 	}
 	return removed, nil
+}
+
+// RenameDevice changes a trusted device's display name, matching by name or
+// fingerprint prefix like RemoveDevice. Trust is pinned to the fingerprint, so
+// a rename never affects it. A rename may not take a name another device
+// already has, since sends resolve targets by name.
+func (s *Store) RenameDevice(nameOrFp, newName string) error {
+	newName = strings.TrimSpace(newName)
+	if newName == "" {
+		return fmt.Errorf("new name is empty")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	idx := -1
+	for i, d := range s.devices {
+		if d.Name == nameOrFp || hasPrefix(d.Fingerprint, nameOrFp) {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("no device matched %s", nameOrFp)
+	}
+	for i, d := range s.devices {
+		if i != idx && d.Name == newName {
+			return fmt.Errorf("another device is already named %s", newName)
+		}
+	}
+	old := s.devices[idx].Name
+	if old == newName {
+		return nil
+	}
+	s.devices[idx].Name = newName
+	if err := s.saveDevicesLocked(); err != nil {
+		s.devices[idx].Name = old // keep memory in step with what's on disk
+		return err
+	}
+	return nil
 }
 
 // TrustedFingerprints returns the set of pinned peer fingerprints.

@@ -40,6 +40,31 @@ func TestEventRoundTrip(t *testing.T) {
 	}
 }
 
+// TestRenameRoundTrip checks the rename command and its Name field survive
+// newline-JSON encode/decode.
+func TestRenameRoundTrip(t *testing.T) {
+	if CmdRename != "rename" {
+		t.Errorf("CmdRename = %q, want %q", CmdRename, "rename")
+	}
+	want := Request{Cmd: CmdRename, Target: "phone", Name: "pixel"}
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(want); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte(`"name":"pixel"`)) {
+		t.Errorf("marshaled request missing name: %s", buf.Bytes())
+	}
+
+	var got Request
+	if err := json.NewDecoder(&buf).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Cmd != want.Cmd || got.Target != want.Target || got.Name != want.Name {
+		t.Errorf("request mismatch:\n got %+v\nwant %+v", got, want)
+	}
+}
+
 // TestSubscribeCommand checks the new command constant serializes as expected.
 func TestSubscribeCommand(t *testing.T) {
 	if CmdSubscribe != "subscribe" {
