@@ -11,8 +11,8 @@ This document specifies v1 only. It assumes familiarity with `SPEC.md`,
 
 > **Amendment — GUI is now the default mode.** v1 shipped the GUI as strictly
 > opt-in: `make build` was CGO-free and GUI-free, and the window was reached via
-> an `adrop gui` subcommand. That decision has since been **reversed**. The `gui`
-> build tag remains, but the default is inverted:
+> an `adrop gui` subcommand. That decision has since been **reversed**. The
+> `gui` build tag remains, but the default is inverted:
 >
 > - `make build` is now `CGO_ENABLED=1 -tags gui`; the CGO-free daemon/CLI build
 >   moved to `make build-headless` (`install-headless` alongside it).
@@ -31,31 +31,33 @@ This document specifies v1 only. It assumes familiarity with `SPEC.md`,
 ## 1. Goals & non-goals
 
 ### Goals
+
 - A lightweight window you drop files onto; files send immediately to the
   last-used peer (AirDrop-like).
 - Accept a **pasted `file:///...` URI string** and send the referenced file(s).
 - Show **incoming** transfer activity (peer, filename, progress) live.
 - Pick the send target from a dropdown of trusted devices.
 - Send the local clipboard to the current peer.
-- Be the *friendly entry point*: if the daemon isn't running, say so and offer
+- Be the _friendly entry point_: if the daemon isn't running, say so and offer
   to start it — don't just error like the CLI.
 - **Manage trusted devices** in the window: see the full list, **rename** one,
   **revoke** one you no longer trust, and **add** a new peer via the pairing
   QR/URI — the core device cycle with no CLI required (§5.4).
 
 ### Non-goals (explicitly out of scope for v1)
-- **Pairing is the *only* add-device path, and it lives in the GUI.** The CLI's
+
+- **Pairing is the _only_ add-device path, and it lives in the GUI.** The CLI's
   `adrop pair show`/`pair add` remain available and unchanged; the GUI's Add
   dialog (§5.4) renders the same QR and accepts the same URI, because pairing is
   an explicit one-time action — not automatic discovery.
-- **Device management beyond the essentials** (bulk import/export, offline
-  state sync, liveness probing). The v1 GUI cycle is add → list → rename →
-  revoke (§5.4); everything else stays CLI-only.
+- **Device management beyond the essentials** (bulk import/export, offline state
+  sync, liveness probing). The v1 GUI cycle is add → list → rename → revoke
+  (§5.4); everything else stays CLI-only.
 - **Online/offline liveness dots** in the peer dropdown. The dropdown lists
   trusted devices by name only; the daemon has no liveness probe and v1 does not
   add one. A send to an offline peer simply fails (handled gracefully, §6).
 - **Persistent / multiplexed IPC connection.** The GUI dials per operation, like
-  the CLI. (The receive feed is the *one* long-lived connection — see §4.)
+  the CLI. (The receive feed is the _one_ long-lived connection — see §4.)
 - **Transfer history persistence.** The window shows the current/most-recent
   activity only; nothing is stored to disk.
 - **Tray icon, full control-panel window, settings screen.** v1 is a single
@@ -66,10 +68,11 @@ This document specifies v1 only. It assumes familiarity with `SPEC.md`,
 ## 2. What it replaces / the workaround today
 
 Today, to send from the desktop you either:
+
 - run `adrop send <peer> <file...>` in a terminal, or
-- right-click in Dolphin → **Send via adrop** (`packaging/dolphin/adrop.desktop`,
-  `Exec=adrop send %F`), which fires a one-shot CLI send with no visible
-  progress or peer choice.
+- right-click in Dolphin → **Send via adrop**
+  (`packaging/dolphin/adrop.desktop`, `Exec=adrop send %F`), which fires a
+  one-shot CLI send with no visible progress or peer choice.
 
 The GUI gives a persistent visual drop target with peer selection, live
 progress, and inline error recovery. **The Dolphin service menu and the CLI are
@@ -105,41 +108,42 @@ GUI-by-default change untouched, since each passes its subcommand explicitly
   last-peer reuses `CmdStatus`. **No changes to send-side IPC or daemon send
   logic.**
 - The **only** new daemon-side work is a receive-event broadcast (§4).
-- **Connection model:** the GUI dials a fresh socket connection per send (exactly
-  mirroring `cmd/adrop/client.go:roundtrip`), and holds **one** separate
-  long-lived connection for the `CmdSubscribe` receive feed. The daemon's
-  existing one-request-per-connection assumption is preserved for everything
-  except the subscribe stream, which is intentionally long-lived.
+- **Connection model:** the GUI dials a fresh socket connection per send
+  (exactly mirroring `cmd/adrop/client.go:roundtrip`), and holds **one**
+  separate long-lived connection for the `CmdSubscribe` receive feed. The
+  daemon's existing one-request-per-connection assumption is preserved for
+  everything except the subscribe stream, which is intentionally long-lived.
 
 ### 3.1 Build-system constraint (must respect) ⚠️
 
 ⚠️ **Superseded in part.** The toolkit choice (Fyne) and the `//go:build gui`
-isolation still stand. What changed: the *default* build is now the tagged,
+isolation still stand. What changed: the _default_ build is now the tagged,
 CGO-enabled one, and the CGO-free daemon/CLI build is the opt-in
 (`make build-headless`). The reasoning below is why the build tag exists at all,
 which is still worth keeping.
 
 The daemon/CLI binary builds with **`CGO_ENABLED=0`** (`Makefile`) — a key
-property (static, lean, no C deps). Choosing `adrop gui` as a *subcommand* of the
-**same binary** means the GUI toolkit is linked into that binary.
+property (static, lean, no C deps). Choosing `adrop gui` as a _subcommand_ of
+the **same binary** means the GUI toolkit is linked into that binary.
 
 **Any real GUI toolkit needs CGO on Linux.** Fyne links OpenGL/X11; Gio also
-requires CGO on Linux (Wayland/X11/EGL/GLES — there is *no* practical
-`CGO_ENABLED=0` Gio build on Linux). So the choice is **not** about avoiding
-CGO — CGO is unavoidable for the GUI. The real job is keeping the *default*
+requires CGO on Linux (Wayland/X11/EGL/GLES — there is _no_ practical
+`CGO_ENABLED=0` Gio build on Linux). So the choice is **not** about avoiding CGO
+— CGO is unavoidable for the GUI. The real job is keeping the _default_
 daemon/CLI build CGO-free and GUI-dependency-free.
 
-**Decision for v1:** build the GUI with **Fyne** (richer widgets, native
-file drag-drop via `Window.SetOnDropped`, much less UI code for the small drop
-window than Gio's low-level API), isolated behind a Go **build tag**
+**Decision for v1:** build the GUI with **Fyne** (richer widgets, native file
+drag-drop via `Window.SetOnDropped`, much less UI code for the small drop window
+than Gio's low-level API), isolated behind a Go **build tag**
 (`//go:build gui`), so:
+
 - `make build` keeps producing the lean **`CGO_ENABLED=0`** daemon/CLI binary
   with **no Fyne/CGO dependency** compiled in when the `gui` tag is absent;
 - a new `make build-gui` target builds the binary **with** the `gui` tag and
   **`CGO_ENABLED=1`** (Fyne needs it);
 - `adrop gui` is registered in `main.go` only under the `gui` tag; without the
-  tag the subcommand prints "this build has no GUI; rebuild with `make
-  build-gui`".
+  tag the subcommand prints "this build has no GUI; rebuild with
+  `make build-gui`".
 
 The build tag is what preserves both user decisions — "single binary /
 `adrop gui` subcommand" **and** a static, CGO-free default daemon/CLI — even
@@ -149,7 +153,7 @@ user for v1, but the build-tag layout degrades to it cleanly).
 
 **Build dependencies (GUI build only):** Fyne requires a C toolchain plus
 `libgl`/`mesa`, `libxcursor`, `libxrandr`, `libxinerama`, `libxi`, `libxxf86vm`
-dev headers (per Fyne's Linux prerequisites). These are *not* needed for the
+dev headers (per Fyne's Linux prerequisites). These are _not_ needed for the
 default `make build`.
 
 ---
@@ -179,9 +183,10 @@ type Event struct {
 }
 ```
 
-Add `Event *Event `json:"event,omitempty"`` to `ipc.Response`. The subscribe
-stream sends `Response{Event: ...}` messages and **never** sets `Done` until the
-daemon shuts down or the connection drops.
+Add
+`Event *Event `json:"event,omitempty"``to`ipc.Response`. The subscribe stream sends `Response{Event:
+...}`messages and **never** sets`Done` until the daemon shuts down or the
+connection drops.
 
 ### 4.2 Daemon side (`internal/daemon`)
 
@@ -209,6 +214,7 @@ daemon shuts down or the connection drops.
   (receive is automatic, per existing design).
 
 ### 4.3 Clipboard receive
+
 Out of scope to surface in the feed for v1 (clipboard sets silently today). The
 event schema above covers files only. (Adding a `recv-clipboard` kind later is
 trivial and non-breaking.)
@@ -227,11 +233,10 @@ const CmdRename Command = "rename" // rename a trusted device (name is cosmetic)
 - `CmdRename` takes `Target` (name or fingerprint prefix, matching `CmdRevoke`)
   and the new `Name`; `Response.Err` reports not-found / invalid-name.
 - Daemon side: add a `Store.RenameDevice(nameOrFp, newName)` to
-  `internal/config` (devices are keyed by pinned fingerprint, so a rename touches
-  display name only and **never** affects trust), and wire it in
-  `internal/daemon/ipc_handler.go`. An old daemon without the arm answers
-  `Err` ("unknown command") — the GUI handles that as a read-only fallback
-  (§5.4).
+  `internal/config` (devices are keyed by pinned fingerprint, so a rename
+  touches display name only and **never** affects trust), and wire it in
+  `internal/daemon/ipc_handler.go`. An old daemon without the arm answers `Err`
+  ("unknown command") — the GUI handles that as a read-only fallback (§5.4).
 
 ---
 
@@ -254,6 +259,7 @@ const CmdRename Command = "rename" // rename a trusted device (name is cosmetic)
 ```
 
 ### 5.1 Peer selection
+
 - The dropdown is populated by a `CmdDevices` round-trip on open (and refreshed
   when the window regains focus). Names only — **no liveness dots** (§1).
 - Default selection is `StatusInfo.LastPeer` (from `CmdStatus`). If there is no
@@ -262,6 +268,7 @@ const CmdRename Command = "rename" // rename a trusted device (name is cosmetic)
   disable sending.
 
 ### 5.2 Sending (auto-send to current peer)
+
 - **Drop files** onto the window → Fyne's `Window.SetOnDropped(pos, []fyne.URI)`
   delivers the dropped items as `fyne.URI` values. For each, take its file path
   (`URI.Path()` / strip the `file://[host]` scheme; URL-unescape `%XX`, e.g.
@@ -279,6 +286,7 @@ const CmdRename Command = "rename" // rename a trusted device (name is cosmetic)
   progress update (see `client.go:isProgressLine`). Render as a bar.
 
 ### 5.3 Receiving (display only)
+
 - On open, the GUI dials the long-lived `CmdSubscribe` connection and renders
   incoming `Event`s as an inbound progress row. On `recv-done`, show a brief
   "received N file(s) from <peer>" line. Files still land in `~/Downloads` via
@@ -294,13 +302,13 @@ trusted-device list plus the add/rename/revoke actions. The daemon remains the
 single source of truth; the GUI is a thin IPC client exactly as in §5.1.
 
 **List.** `CmdDevices` round-trip (same one the dropdown uses) → each device
-shown as name + fingerprint prefix + last-known address. No liveness probing
-(§1 non-goals).
+shown as name + fingerprint prefix + last-known address. No liveness probing (§1
+non-goals).
 
 **Add (pair).** An **Add** button opens the pairing dialog — the QR rendered
-from `CmdPairShow`, or paste an `adrop://pair?d=...` URI → `CmdPairAdd`
-(the same flow `adrop pair show` / `adrop pair add` drive on the CLI). When a
-device is added, the list and the peer dropdown refresh immediately.
+from `CmdPairShow`, or paste an `adrop://pair?d=...` URI → `CmdPairAdd` (the
+same flow `adrop pair show` / `adrop pair add` drive on the CLI). When a device
+is added, the list and the peer dropdown refresh immediately.
 
 **Rename.** A per-device rename action issues the new `CmdRename` (§4.4) with
 `Target` (existing name or fingerprint prefix) and `Name` (the new name). The
@@ -321,17 +329,17 @@ the GUI must never pretend a change succeeded.
 
 ## 6. Error & edge-case UX
 
-| Situation | Behavior |
-|---|---|
-| Send fails (peer offline, dial error, mid-transfer abort) | Show inline error in the window (e.g. red "thinkpad offline"). **Keep the dropped/pasted files staged** so the user can switch the peer dropdown and click **Retry** without re-dropping. |
-| No last peer & user hasn't picked one | Prompt to pick a peer from the dropdown before the auto-send proceeds; don't silently fail. |
-| Zero trusted devices | Disable send controls; show "pair with `adrop pair show`". |
-| Daemon not reachable on the IPC socket | Show **"⚠ daemon not running"** with a **[Start daemon]** button that runs `systemctl --user start adrop`, then retries the connection. Do **not** silently spawn `adrop daemon`. (Improves on the CLI's bare error.) |
-| Dropped/pasted URI isn't a `file://` path, or path missing | Show a clear inline error naming the bad URI; do not send the others silently — surface which ones failed `os.Stat`. |
-| Subscribe stream drops | Auto-reconnect with backoff; degrade to the daemon-not-running state if persistent. |
+| Situation                                                  | Behavior                                                                                                                                                                                                              |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Send fails (peer offline, dial error, mid-transfer abort)  | Show inline error in the window (e.g. red "thinkpad offline"). **Keep the dropped/pasted files staged** so the user can switch the peer dropdown and click **Retry** without re-dropping.                             |
+| No last peer & user hasn't picked one                      | Prompt to pick a peer from the dropdown before the auto-send proceeds; don't silently fail.                                                                                                                           |
+| Zero trusted devices                                       | Disable send controls; show "pair with `adrop pair show`".                                                                                                                                                            |
+| Daemon not reachable on the IPC socket                     | Show **"⚠ daemon not running"** with a **[Start daemon]** button that runs `systemctl --user start adrop`, then retries the connection. Do **not** silently spawn `adrop daemon`. (Improves on the CLI's bare error.) |
+| Dropped/pasted URI isn't a `file://` path, or path missing | Show a clear inline error naming the bad URI; do not send the others silently — surface which ones failed `os.Stat`.                                                                                                  |
+| Subscribe stream drops                                     | Auto-reconnect with backoff; degrade to the daemon-not-running state if persistent.                                                                                                                                   |
 
-**Staging note:** §5.2 says "auto-send" for the happy path, but on *failure* the
-files become *staged* so Retry works. The window holds the last drop's file list
+**Staging note:** §5.2 says "auto-send" for the happy path, but on _failure_ the
+files become _staged_ so Retry works. The window holds the last drop's file list
 in memory until a send succeeds or the user clears it.
 
 ---
@@ -347,7 +355,7 @@ in memory until a send succeeds or the user clears it.
   Type=Application
   Name=adrop
   Comment=Send files to paired devices
-  Exec=adrop gui
+  Exec=adrop
   Icon=network-wireless
   Terminal=false
   Categories=Network;FileTransfer;
@@ -377,10 +385,10 @@ in memory until a send succeeds or the user clears it.
 - **Rollout:** ship behind the `gui` build tag, all at once (no runtime flag).
   Users opt in by running `make build-gui` + `make gui-install`. No migration,
   no config changes, no new state files. The daemon change ships in the normal
-  binary and is inert until a GUI subscribes.
-  ⚠️ **Superseded:** the GUI is no longer opt-in. `make build` + `make
-  gui-install` is the normal path; opting *out* is `make build-headless`. Still
-  no migration, no config changes, no new state files.
+  binary and is inert until a GUI subscribes. ⚠️ **Superseded:** the GUI is no
+  longer opt-in. `make build` + `make gui-install` is the normal path; opting
+  _out_ is `make build-headless`. Still no migration, no config changes, no new
+  state files.
 
 ---
 
@@ -406,6 +414,7 @@ in memory until a send succeeds or the user clears it.
   management.
 
 ### Tests
+
 - `internal/ipc` round-trip of the new `Event`/`CmdSubscribe` JSON and
   `CmdRename`/`Request.Name`.
 - `internal/config` `RenameDevice`: rename by name and by fingerprint prefix;
@@ -428,6 +437,7 @@ in memory until a send succeeds or the user clears it.
 When building this, you may spawn or compose agents and use the **voltagent**
 agent suite — create your own agent teams or delegate to individual specialists
 as needed. Suggested fits for this feature:
+
 - `voltagent-lang:golang-pro` — the daemon/IPC changes (§4) and the Go GUI code.
 - `voltagent-core-dev:ui-designer` / `voltagent-core-dev:frontend-developer` —
   the Fyne window layout and interaction details (§5).

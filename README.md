@@ -75,6 +75,11 @@ The GUI is isolated behind a `gui` build tag, which `make build` sets; only
 `make build-headless` drops it. There is no `adrop gui` subcommand — a bare
 `adrop` is the way to open the window.
 
+**Upgrading:** the `gui` subcommand used to exist, and launchers installed by
+an older `make gui-install` still run `adrop gui`, which now fails with
+"unknown command" — silently, since the entry is `Terminal=false`. Re-run
+`make gui-install` once to rewrite the launcher.
+
 ## Usage
 
 ```sh

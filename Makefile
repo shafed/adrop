@@ -60,7 +60,10 @@ clean:
 # Both .desktop installs rewrite Exec= to an absolute path: the desktop session's
 # PATH does not necessarily include $(BINDIR) (systemd --user starts with a bare
 # PATH). The files in packaging/ keep the portable bare `Exec=adrop ...` form.
-dolphin-install:
+# They depend on `install` so the baked-in $(BINDIR)/$(BINARY) is guaranteed to
+# exist — otherwise `make PREFIX=/usr install && make gui-install` would write a
+# launcher pointing at a path that was never installed to.
+dolphin-install: install
 	@install -d $(DOLPHIN_DIR)
 	sed 's|^Exec=$(BINARY)\b|Exec=$(BINDIR)/$(BINARY)|' packaging/dolphin/adrop.desktop \
 	  > $(DOLPHIN_DIR)/adrop.desktop
@@ -70,7 +73,7 @@ dolphin-install:
 dolphin-uninstall:
 	rm -f $(DOLPHIN_DIR)/adrop.desktop
 
-gui-install:
+gui-install: install
 	@install -d $(APPS_DIR)
 	sed 's|^Exec=$(BINARY)\b|Exec=$(BINDIR)/$(BINARY)|' packaging/desktop/adrop-gui.desktop \
 	  > $(APPS_DIR)/adrop-gui.desktop
