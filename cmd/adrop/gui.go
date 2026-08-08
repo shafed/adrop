@@ -106,7 +106,6 @@ type gui struct {
 	peers   []string         // device names, in dropdown order
 	devices []ipc.DeviceInfo // full trusted-device list, for the manage dialog
 	manage  func(error)      // redraws the open manage list; nil when closed
-	nested  bool             // a dialog is stacked on the manage one (Escape guard)
 	staged  []string         // last batch's files, kept for Retry on failure
 	pairing bool             // true while a pairing dialog owns a pair-show request
 	sending bool             // a send is in flight; serializes the send entry points
@@ -268,6 +267,59 @@ func (g *gui) refreshPeers() {
 	}()
 }
 
+// ----- dialogs: Escape to dismiss -----
+
+// dismissible is the slice of Fyne's dialog types that escapeCloses needs. All
+// of them (custom, form, confirm, error, file) satisfy it.
+type dismissible interface {
+	Hide()
+	SetOnClosed(func())
+}
+
+// escapeCloses makes Escape dismiss d. Fyne has no dismiss key of its own, so
+// the window canvas carries a key handler for as long as d is open, chaining to
+// whatever handler was there and putting it back on close. Handlers therefore
+// stack the way the dialogs do: Escape closes the innermost one, which restores
+// the handler of the dialog underneath.
+//
+// The canvas only sees keys no focused widget consumed, so a dialog holding a
+// widget that swallows Escape (an Entry) needs that widget's cooperation — see
+// escEntry.
+func (g *gui) escapeCloses(d dismissible) {
+	prev := g.win.Canvas().OnTypedKey()
+	g.win.Canvas().SetOnTypedKey(func(k *fyne.KeyEvent) {
+		if k.Name == fyne.KeyEscape {
+			d.Hide() // runs the dialog's OnClosed, restoring prev below
+			return
+		}
+		if prev != nil {
+			prev(k)
+		}
+	})
+	d.SetOnClosed(func() { g.win.Canvas().SetOnTypedKey(prev) })
+}
+
+// escEntry is an Entry that hands Escape back instead of swallowing it, so a
+// dialog stays Escape-dismissable while the user is typing in its field.
+type escEntry struct {
+	widget.Entry
+	onEscape func()
+}
+
+func newEscEntry(onEscape func()) *escEntry {
+	e := &escEntry{onEscape: onEscape}
+	e.ExtendBaseWidget(e)
+	return e
+}
+
+func (e *escEntry) TypedKey(k *fyne.KeyEvent) {
+	if k.Name == fyne.KeyEscape {
+		e.onEscape()
+		return
+	}
+	e.Entry.TypedKey(k)
+}
+
 // ----- device management (§5.4) -----
 
 // openManageDialog shows the trusted-device list with add / rename / revoke.
@@ -327,24 +379,8 @@ func (g *gui) openManageDialog() {
 	)
 	d := dialog.NewCustom("Devices", "Close", content, g.win)
 	d.Resize(fyne.NewSize(400, 440))
-
-	// Escape closes the dialog — Fyne has no dismiss key of its own. The canvas
-	// handler only fires when no widget holds focus, and the nested guard covers
-	// the rest: while a rename/revoke/pair dialog is on top, Escape must not pull
-	// the device list out from under it.
-	prevKey := g.win.Canvas().OnTypedKey()
-	g.win.Canvas().SetOnTypedKey(func(k *fyne.KeyEvent) {
-		if k.Name == fyne.KeyEscape && !g.nestedActive() {
-			d.Hide() // runs SetOnClosed below
-			return
-		}
-		if prevKey != nil {
-			prevKey(k)
-		}
-	})
-
+	g.escapeCloses(d)
 	d.SetOnClosed(func() {
-		g.win.Canvas().SetOnTypedKey(prevKey)
 		g.mu.Lock()
 		g.manage = nil
 		g.mu.Unlock()
@@ -357,12 +393,11 @@ func (g *gui) openManageDialog() {
 // promptRename asks for a new display name and issues CmdRename. The device is
 // addressed by fingerprint, so the rename can't hit the wrong peer.
 func (g *gui) promptRename(dev ipc.DeviceInfo, status *widget.Label) {
-	entry := widget.NewEntry()
+	var d *dialog.FormDialog
+	entry := newEscEntry(func() { d.Hide() }) // Escape works while typing too
 	entry.SetText(dev.Name)
 	form := []*widget.FormItem{widget.NewFormItem("Name", entry)}
-	g.setNested(true)
-	dialog.ShowForm("Rename device", "Rename", "Cancel", form, func(ok bool) {
-		g.setNested(false)
+	d = dialog.NewForm("Rename device", "Rename", "Cancel", form, func(ok bool) {
 		if !ok {
 			return
 		}
@@ -373,35 +408,23 @@ func (g *gui) promptRename(dev ipc.DeviceInfo, status *widget.Label) {
 		go g.runManageAction(renameRequest(dev.Fingerprint, newName),
 			fmt.Sprintf("Renamed %s to %s.", dev.Name, newName), status)
 	}, g.win)
+	g.escapeCloses(d)
+	d.Show()
 }
 
 // confirmRevoke asks before untrusting a device, since revoke is immediate and
 // only undone by pairing again.
 func (g *gui) confirmRevoke(dev ipc.DeviceInfo, status *widget.Label) {
 	msg := fmt.Sprintf("Untrust %s? You won't be able to send to it until you pair again.", dev.Name)
-	g.setNested(true)
-	dialog.ShowConfirm("Revoke device", msg, func(ok bool) {
-		g.setNested(false)
+	d := dialog.NewConfirm("Revoke device", msg, func(ok bool) {
 		if !ok {
 			return
 		}
 		go g.runManageAction(revokeRequest(dev.Fingerprint),
 			fmt.Sprintf("Revoked %s.", dev.Name), status)
 	}, g.win)
-}
-
-// setNested marks whether a dialog is stacked on top of the manage one; while
-// it is, Escape leaves the device list alone.
-func (g *gui) setNested(on bool) {
-	g.mu.Lock()
-	g.nested = on
-	g.mu.Unlock()
-}
-
-func (g *gui) nestedActive() bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.nested
+	g.escapeCloses(d)
+	d.Show()
 }
 
 // notifyManage hands a refresh outcome to an open manage dialog: nil redraws
@@ -438,7 +461,9 @@ func (g *gui) runManageAction(req ipc.Request, okMsg string, status *widget.Labe
 		case err != nil:
 			// The dialog was closed mid-round-trip; a failure must not vanish
 			// with its status label (a success is visible in the dropdown).
-			dialog.ShowError(err, g.win)
+			e := dialog.NewError(err, g.win)
+			g.escapeCloses(e)
+			e.Show()
 		}
 	})
 	g.refreshPeers()
@@ -450,7 +475,6 @@ func (g *gui) openPairDialog() {
 	if !g.beginPairing() {
 		return
 	}
-	g.setNested(true) // may be stacked on the manage dialog; guard its Escape
 	g.pairBtn.Disable()
 
 	intro := widget.NewLabel("Scan this QR with the device you want to pair.")
@@ -499,10 +523,10 @@ func (g *gui) openPairDialog() {
 			conn = nil
 		}
 	}
+	g.escapeCloses(pairDialog)
 	pairDialog.SetOnClosed(func() {
 		closedOnce.Do(func() { close(closed) })
 		closeConn()
-		g.setNested(false)
 		g.setPairing(false)
 		if g.pairBtn != nil {
 			g.pairBtn.Enable()
@@ -657,7 +681,7 @@ func (g *gui) setSendEnabled(on bool) {
 // chooseFiles opens a native file picker and sends the chosen file. (Fyne's
 // open dialog is single-select; drop a batch onto the window for many files.)
 func (g *gui) chooseFiles() {
-	dialog.ShowFileOpen(func(r fyne.URIReadCloser, err error) {
+	d := dialog.NewFileOpen(func(r fyne.URIReadCloser, err error) {
 		if err != nil || r == nil {
 			return // cancelled or error
 		}
@@ -665,6 +689,8 @@ func (g *gui) chooseFiles() {
 		_ = r.Close()
 		g.sendFromInput(path)
 	}, g.win)
+	g.escapeCloses(d)
+	d.Show()
 }
 
 // currentPeer returns the selected peer name, or "" if none.
