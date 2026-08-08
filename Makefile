@@ -9,7 +9,7 @@ UNITDIR := $(HOME)/.config/systemd/user
 DOLPHIN_DIR := $(HOME)/.local/share/kio/servicemenus
 APPS_DIR := $(HOME)/.local/share/applications
 
-.PHONY: all build build-daemon build-headless test vet vet-gui race install \
+.PHONY: all build build-daemon build-headless test test-gui vet vet-gui race install \
         install-headless uninstall clean dolphin-install dolphin-uninstall \
         gui-install gui-uninstall
 
@@ -43,6 +43,11 @@ vet:
 # Kept separate so `make vet` still runs without the X11/GL dev headers.
 vet-gui:
 	CGO_ENABLED=1 go vet -tags gui ./...
+
+# The GUI's own tests (Fyne's test driver, no display needed) are behind the
+# same tag as the code they cover, so `make test` alone doesn't compile them.
+test-gui:
+	CGO_ENABLED=1 go test -tags gui ./...
 
 race:
 	go test -race ./...

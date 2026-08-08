@@ -106,6 +106,7 @@ type gui struct {
 	peers   []string         // device names, in dropdown order
 	devices []ipc.DeviceInfo // full trusted-device list, for the manage dialog
 	manage  func(error)      // redraws the open manage list; nil when closed
+	nested  bool             // a dialog is stacked on the manage one (Escape guard)
 	staged  []string         // last batch's files, kept for Retry on failure
 	pairing bool             // true while a pairing dialog owns a pair-show request
 	sending bool             // a send is in flight; serializes the send entry points
@@ -326,7 +327,24 @@ func (g *gui) openManageDialog() {
 	)
 	d := dialog.NewCustom("Devices", "Close", content, g.win)
 	d.Resize(fyne.NewSize(400, 440))
+
+	// Escape closes the dialog — Fyne has no dismiss key of its own. The canvas
+	// handler only fires when no widget holds focus, and the nested guard covers
+	// the rest: while a rename/revoke/pair dialog is on top, Escape must not pull
+	// the device list out from under it.
+	prevKey := g.win.Canvas().OnTypedKey()
+	g.win.Canvas().SetOnTypedKey(func(k *fyne.KeyEvent) {
+		if k.Name == fyne.KeyEscape && !g.nestedActive() {
+			d.Hide() // runs SetOnClosed below
+			return
+		}
+		if prevKey != nil {
+			prevKey(k)
+		}
+	})
+
 	d.SetOnClosed(func() {
+		g.win.Canvas().SetOnTypedKey(prevKey)
 		g.mu.Lock()
 		g.manage = nil
 		g.mu.Unlock()
@@ -342,7 +360,9 @@ func (g *gui) promptRename(dev ipc.DeviceInfo, status *widget.Label) {
 	entry := widget.NewEntry()
 	entry.SetText(dev.Name)
 	form := []*widget.FormItem{widget.NewFormItem("Name", entry)}
+	g.setNested(true)
 	dialog.ShowForm("Rename device", "Rename", "Cancel", form, func(ok bool) {
+		g.setNested(false)
 		if !ok {
 			return
 		}
@@ -359,13 +379,29 @@ func (g *gui) promptRename(dev ipc.DeviceInfo, status *widget.Label) {
 // only undone by pairing again.
 func (g *gui) confirmRevoke(dev ipc.DeviceInfo, status *widget.Label) {
 	msg := fmt.Sprintf("Untrust %s? You won't be able to send to it until you pair again.", dev.Name)
+	g.setNested(true)
 	dialog.ShowConfirm("Revoke device", msg, func(ok bool) {
+		g.setNested(false)
 		if !ok {
 			return
 		}
 		go g.runManageAction(revokeRequest(dev.Fingerprint),
 			fmt.Sprintf("Revoked %s.", dev.Name), status)
 	}, g.win)
+}
+
+// setNested marks whether a dialog is stacked on top of the manage one; while
+// it is, Escape leaves the device list alone.
+func (g *gui) setNested(on bool) {
+	g.mu.Lock()
+	g.nested = on
+	g.mu.Unlock()
+}
+
+func (g *gui) nestedActive() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.nested
 }
 
 // notifyManage hands a refresh outcome to an open manage dialog: nil redraws
@@ -414,6 +450,7 @@ func (g *gui) openPairDialog() {
 	if !g.beginPairing() {
 		return
 	}
+	g.setNested(true) // may be stacked on the manage dialog; guard its Escape
 	g.pairBtn.Disable()
 
 	intro := widget.NewLabel("Scan this QR with the device you want to pair.")
@@ -465,6 +502,7 @@ func (g *gui) openPairDialog() {
 	pairDialog.SetOnClosed(func() {
 		closedOnce.Do(func() { close(closed) })
 		closeConn()
+		g.setNested(false)
 		g.setPairing(false)
 		if g.pairBtn != nil {
 			g.pairBtn.Enable()
