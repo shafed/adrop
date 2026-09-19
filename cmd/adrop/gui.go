@@ -142,6 +142,10 @@ func (g *gui) content() fyne.CanvasObject {
 	g.pairBtn.Hide()
 
 	g.outLabel = widget.NewLabel("")
+	// A failed send now explains itself in a sentence or two (see dialFailure),
+	// and an unwrapped label would stretch the 320px window to fit it on one
+	// line. Wrap instead, in both directions.
+	g.outLabel.Wrapping = fyne.TextWrapWord
 	g.outBar = widget.NewProgressBar()
 	g.outBar.Hide()
 
@@ -153,6 +157,7 @@ func (g *gui) content() fyne.CanvasObject {
 	g.retryBtn.Hide()
 
 	g.inLabel = widget.NewLabel("")
+	g.inLabel.Wrapping = fyne.TextWrapWord
 	g.inBar = widget.NewProgressBar()
 	g.inBar.Hide()
 

@@ -276,7 +276,11 @@ func (d *Daemon) startMDNS(ctx context.Context) {
 // loop is passive and may not have observed the new address yet, so we kick off
 // one resolve pass on demand. Best-effort and bounded — errors are logged, not
 // returned, and a missing avahi just no-ops.
-func (d *Daemon) refreshAddrViaMDNS(ctx context.Context) {
+//
+// want is the fingerprint the caller cares about; the returned bool reports
+// whether that peer answered, which is what separates "the phone is here but
+// asleep" from "the phone is not on this network at all".
+func (d *Daemon) refreshAddrViaMDNS(ctx context.Context, want string) (seen bool) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	selfFP := d.store.Fingerprint()
@@ -287,12 +291,16 @@ func (d *Daemon) refreshAddrViaMDNS(ctx context.Context) {
 		if _, trusted := d.store.IsTrusted(fp); !trusted {
 			return
 		}
+		if want != "" && fp == want {
+			seen = true
+		}
 		d.store.UpdateAddr(fp, addr)
 		d.logger.Printf("mDNS: refreshed addr for %s to %s", name, addr)
 	})
 	if err != nil {
 		d.logger.Printf("mdns: resolve: %v", err)
 	}
+	return seen
 }
 
 // subscribe registers a new receive-event channel and returns it along with an

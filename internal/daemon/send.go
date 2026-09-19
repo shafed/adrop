@@ -56,6 +56,11 @@ func (d *Daemon) dialPeer(ctx context.Context, target string) (*tls.Conn, config
 		return nil, config.Device{}, fmt.Errorf("no trusted device matching %q", target)
 	}
 	conn, fp, err := transport.Dial(dev.Addr, d.store.Certificate(), d)
+	// seenOnLAN and wake carry what the recovery attempts learned, so the error
+	// returned to the user can name the actual problem instead of repeating the
+	// same "connect: …" for three unrelated causes.
+	var seenOnLAN bool
+	var wake string
 	if err != nil {
 		// The peer may have changed IP on the same LAN. Actively refresh its
 		// address via a one-shot mDNS resolve, then retry the dial whenever the
@@ -64,7 +69,7 @@ func (d *Daemon) dialPeer(ctx context.Context, target string) (*tls.Conn, config
 		// when no relay is configured. Bounded by mdnsRecoverTimeout (measured
 		// from after the resolve) so a truly unreachable peer still proceeds to
 		// the wake path / final error.
-		d.refreshAddrViaMDNS(ctx)
+		seenOnLAN = d.refreshAddrViaMDNS(ctx, dev.Fingerprint)
 		deadline := time.Now().Add(mdnsRecoverTimeout)
 		for {
 			if cur, ok := d.store.Lookup(target); ok && cur.Addr != dev.Addr {
@@ -87,10 +92,18 @@ func (d *Daemon) dialPeer(ctx context.Context, target string) (*tls.Conn, config
 	}
 	if err != nil {
 		// Attempt FCM wake if we have the token and a relay is configured.
+		switch {
+		case dev.FcmToken == "":
+			wake = fmt.Sprintf("No wake was tried: %s hasn't shared an FCM token yet "+
+				"(it does so on its next direct connection).", dev.Name)
+		case d.relayAddr == "":
+			wake = "No wake was tried: no relay is configured (ADROP_RELAY)."
+		}
 		if dev.FcmToken != "" && d.relayAddr != "" {
 			d.logger.Printf("dial %s failed (%v); sending FCM wake via relay", dev.Name, err)
 			if wakeErr := d.wakeViRelay(dev); wakeErr != nil {
 				d.logger.Printf("FCM wake failed: %v", wakeErr)
+				wake = fmt.Sprintf("The wake relay at %s could not be reached: %v.", d.relayAddr, wakeErr)
 			} else {
 				// Poll for the phone to open its receive window instead of
 				// blindly sleeping: retry the dial every wakePollInterval until
@@ -119,13 +132,16 @@ func (d *Daemon) dialPeer(ctx context.Context, target string) (*tls.Conn, config
 						break
 					}
 					if time.Now().After(deadline) {
+						wake = fmt.Sprintf("A wake push was delivered, but %s did not open "+
+							"its receive window within %s.", dev.Name, wakeTimeout)
 						break
 					}
 				}
 			}
 		}
 		if err != nil {
-			return nil, dev, fmt.Errorf("dial %s (%s): %w", dev.Name, dev.Addr, err)
+			d.logger.Printf("dial %s at %s failed: %v", dev.Name, dev.Addr, err)
+			return nil, dev, dialFailure(dev, err, seenOnLAN, wake)
 		}
 	}
 	if fp != dev.Fingerprint {
