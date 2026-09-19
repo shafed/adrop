@@ -153,7 +153,7 @@ fixed:
    had no cached token to send in any Hello at all
    (`~/…/shared_prefs/adrop_fcm.xml` didn't exist on-device).
 4. **`adrop-relay` not running:** the systemd unit
-   (`~/dotfiles/systemd/user/adrop-relay.service`) was enabled but crash-looping
+   (`~/github/dotfiles/systemd/user/adrop-relay.service`) was enabled but crash-looping
    — it pointed at `~/.config/adrop/fcm-service-account.json`, which didn't
    exist under that name.
 5. **`google-services.json` was a placeholder:** the committed (gitignored)
