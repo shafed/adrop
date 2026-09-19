@@ -30,15 +30,28 @@ func sanitizeName(name string) string {
 // existing file, auto-renaming "file.pdf" -> "file (1).pdf" and so on.
 // It never overwrites and never prompts (per SPEC §7).
 func uniquePath(dir, name string) string {
+	return uniquePathExcept(dir, name, nil)
+}
+
+// uniquePathExcept is uniquePath with an extra veto: a candidate is skipped
+// when taken reports it claimed by something the file system doesn't show —
+// an in-flight transfer streaming into its .adrop-part sibling.
+func uniquePathExcept(dir, name string, taken func(candidate string) bool) string {
+	free := func(candidate string) bool {
+		if exists(candidate) {
+			return false
+		}
+		return taken == nil || !taken(candidate)
+	}
 	candidate := filepath.Join(dir, name)
-	if !exists(candidate) {
+	if free(candidate) {
 		return candidate
 	}
 	ext := filepath.Ext(name)
 	stem := strings.TrimSuffix(name, ext)
 	for i := 1; ; i++ {
 		c := filepath.Join(dir, fmt.Sprintf("%s (%d)%s", stem, i, ext))
-		if !exists(c) {
+		if free(c) {
 			return c
 		}
 	}

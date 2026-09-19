@@ -53,6 +53,12 @@ type Daemon struct {
 
 	downloadDir string
 
+	// slots records the .adrop-part paths in-flight receives are streaming
+	// into, so two sessions receiving the same file name never share one temp
+	// file (see reserveSlot). Guarded by slotMu.
+	slotMu sync.Mutex
+	slots  map[string]struct{}
+
 	// clipboardSet writes received clipboard data; overridable in tests.
 	clipboardSet func(ctx context.Context, data []byte, mime string) error
 	// clipboardGet reads local clipboard for outgoing push; overridable.

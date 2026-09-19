@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -40,9 +41,12 @@ func TestResumeTransfer(t *testing.T) {
 	// first ChunkSize bytes.  The name must match sanitizeName("bigfile.bin")
 	// and uniquePath must land on "bigfile.bin" (no collision yet).
 	const alreadyDone = int64(proto.ChunkSize)
-	partPath := filepath.Join(phone.download, "bigfile.bin.adrop-part")
+	partPath := filepath.Join(phone.download, "bigfile.bin"+partSuffix)
 	mustWrite(t, partPath, payload[:alreadyDone])
-	_ = sha // SHA is embedded in the manifest by buildManifest; no need to pass explicitly.
+	// The sidecar records which original the partial belongs to; without it the
+	// receiver treats the partial as stale and restarts from zero, so seeding it
+	// is what makes this a resume test at all.
+	writePartMeta(partPath, proto.FileMeta{SHA256: sha})
 
 	// Send the file; resume handshake happens automatically (Resume=true in SessionStart).
 	if err := pc.d.SendFiles(ctx, "phone", []string{src}, nil); err != nil {
@@ -68,17 +72,22 @@ func TestResumeTransferWithProgressSkip(t *testing.T) {
 	phone := newTestDaemon(t, ctx, "phone")
 	pair(t, pc, phone)
 
-	// A two-chunk file; seed the receiver with the first chunk already done.
+	// A four-chunk file; seed the receiver with three chunks already done, so a
+	// resumed send reports >= 75% on its first progress line while a restarted
+	// one would report 25%.
 	const chunkSz = proto.ChunkSize
-	payload := randomBytes(t, chunkSz*2)
+	payload := randomBytes(t, chunkSz*4)
 
 	srcDir := t.TempDir()
 	src := filepath.Join(srcDir, "two_chunks.bin")
 	mustWrite(t, src, payload)
 
-	// Seed partial file (first chunk).
-	partPath := filepath.Join(phone.download, "two_chunks.bin.adrop-part")
-	mustWrite(t, partPath, payload[:chunkSz])
+	// Seed partial file (first three chunks) plus the sidecar naming its origin.
+	partPath := filepath.Join(phone.download, "two_chunks.bin"+partSuffix)
+	mustWrite(t, partPath, payload[:chunkSz*3])
+	h := sha256.New()
+	h.Write(payload)
+	writePartMeta(partPath, proto.FileMeta{SHA256: hex.EncodeToString(h.Sum(nil))})
 
 	// Capture the human-readable progress lines from the sender.
 	var mu sync.Mutex
@@ -93,20 +102,23 @@ func TestResumeTransferWithProgressSkip(t *testing.T) {
 
 	assertFileEqual(t, filepath.Join(phone.download, "two_chunks.bin"), payload)
 
-	// We expect a progress line reporting > 50% on the very first chunk update
-	// because the sender started from offset=chunkSz (half the file is already done).
+	// The FIRST percentage line must already be >= 75%: the sender started from
+	// offset=3*chunkSz. Checking "some line is >= 75%" would pass without resume
+	// too, since every transfer ends at 100%.
 	mu.Lock()
 	defer mu.Unlock()
-	foundAbove50 := false
+	first := ""
 	for _, l := range lines {
-		// Lines like "two_chunks.bin: 100%" — check any is >= 50%
-		if len(l) > 0 && containsPct(l, 50) {
-			foundAbove50 = true
+		if strings.HasSuffix(l, "%") {
+			first = l
 			break
 		}
 	}
-	if !foundAbove50 {
-		t.Errorf("expected at least one progress line >= 50%% (resume offset), got: %v", lines)
+	if first == "" {
+		t.Fatalf("no progress percentage lines at all, got: %v", lines)
+	}
+	if !containsPct(first, 75) {
+		t.Errorf("first progress line %q < 75%%: the transfer restarted instead of resuming (lines: %v)", first, lines)
 	}
 }
 

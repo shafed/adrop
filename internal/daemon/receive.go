@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/shafed/adrop/internal/ipc"
 	"github.com/shafed/adrop/internal/notify"
@@ -151,6 +152,28 @@ func (d *Daemon) receiveFilesWithProgress(ctx context.Context, conn *tls.Conn, p
 		d.broadcast(ipc.Event{Kind: "recv-error", Peer: peerName, Count: count, Err: err.Error()})
 		return err
 	}
+	// slots holds one exclusive destination claim per file index, taken at the
+	// first frame naming that file (resume_query or file_header) and held until
+	// the session ends. Two sessions receiving the same file name concurrently
+	// therefore stream into different .adrop-part files instead of interleaving
+	// their bytes in one.
+	slots := make(map[int]*fileSlot)
+	defer func() {
+		for _, s := range slots {
+			s.release()
+		}
+	}()
+	slotFor := func(i int) (*fileSlot, error) {
+		if s, ok := slots[i]; ok {
+			return s, nil
+		}
+		s, err := d.reserveSlot(manifest[i])
+		if err != nil {
+			return nil, err
+		}
+		slots[i] = s
+		return s, nil
+	}
 	var saved []string
 	for {
 		hdr, err := proto.ReadHeader(conn)
@@ -184,7 +207,12 @@ func (d *Daemon) receiveFilesWithProgress(ctx context.Context, conn *tls.Conn, p
 		if hdr.Type == proto.TypeResumeQuery {
 			var partBytes int64
 			if resume && hdr.FileIndex >= 0 && hdr.FileIndex < len(manifest) {
-				partBytes = d.partialFileBytes(manifest[hdr.FileIndex], hdr.SHA256)
+				// A reservation failure (unsafe rel_path) is reported when the
+				// file_header for the same index arrives; here it only means
+				// "nothing to resume".
+				if slot, err := slotFor(hdr.FileIndex); err == nil {
+					partBytes = partialBytes(slot, manifest[hdr.FileIndex])
+				}
 			}
 			_ = proto.WriteControl(conn, proto.Header{
 				Type:      proto.TypeResumeOffer,
@@ -200,11 +228,18 @@ func (d *Daemon) receiveFilesWithProgress(ctx context.Context, conn *tls.Conn, p
 			return emitErr(fmt.Errorf("file index %d out of range", hdr.FileIndex))
 		}
 		meta := manifest[hdr.FileIndex]
+		slot, err := slotFor(hdr.FileIndex)
+		if err != nil {
+			_ = proto.WriteControl(conn, proto.Header{
+				Type: proto.TypeAck, FileIndex: hdr.FileIndex, OK: false, Error: err.Error(),
+			})
+			return emitErr(fmt.Errorf("file %q: %w", meta.Name, err))
+		}
 		var resumeOffset int64
 		if resume {
-			resumeOffset = d.partialFileBytes(meta, meta.SHA256)
+			resumeOffset = partialBytes(slot, meta)
 		}
-		path, err := d.receiveOneFile(conn, meta, resumeOffset)
+		path, err := d.receiveOneFile(conn, meta, slot, resumeOffset)
 		if err != nil {
 			_ = proto.WriteControl(conn, proto.Header{
 				Type: proto.TypeAck, FileIndex: hdr.FileIndex, OK: false, Error: err.Error(),
@@ -230,52 +265,107 @@ func (d *Daemon) receiveFilesWithProgress(ctx context.Context, conn *tls.Conn, p
 	return nil
 }
 
-// partialFileBytes returns the size of a .adrop-part file for meta,
-// verifying it belongs to the same original via sha256. Returns 0 if absent,
-// already complete, or hash-mismatched.
-func (d *Daemon) partialFileBytes(meta proto.FileMeta, sha256hash string) int64 {
-	var dest string
-	if meta.RelPath != "" {
-		dest = filepath.Join(d.downloadDir, filepath.FromSlash(meta.RelPath))
-	} else {
-		dest = filepath.Join(d.downloadDir, sanitizeName(meta.Name))
-	}
-	tmp := dest + ".adrop-part"
-	fi, err := os.Stat(tmp)
-	if err != nil || fi.Size() == 0 || fi.Size() >= meta.Size {
-		return 0
-	}
-	if sha256hash != "" && sha256hash != meta.SHA256 {
-		_ = os.Remove(tmp) // stale partial from a different file
-		return 0
-	}
-	return fi.Size()
+// partSuffix names the in-progress file that becomes the real one on success.
+const partSuffix = ".adrop-part"
+
+// fileSlot is an exclusive claim on one destination path (and its .adrop-part
+// sibling) for the duration of a single file transfer.
+type fileSlot struct {
+	dest    string
+	tmp     string
+	release func()
 }
 
-// receiveOneFile streams chunks for a single file to a uniquely-named path in
-// the download dir, verifying the SHA-256 from the manifest. On hash mismatch
-// the partial file is removed.
-//
-// resumeOffset > 0 means a .adrop-part already has that many bytes; the
-// function appends to it and seeds the hasher from the existing data.
-func (d *Daemon) receiveOneFile(conn *tls.Conn, meta proto.FileMeta, resumeOffset int64) (string, error) {
-	var dest string
+// reserveSlot claims a free destination for meta, skipping both names that
+// already exist on disk and names another in-flight transfer is streaming
+// into. The returned slot's release func must be called when the transfer is
+// done, successfully or not.
+func (d *Daemon) reserveSlot(meta proto.FileMeta) (*fileSlot, error) {
+	name := sanitizeName(meta.Name)
 	if meta.RelPath != "" {
 		// Validate: reject any RelPath component that is "..".
 		clean := filepath.FromSlash(meta.RelPath)
 		for _, part := range strings.Split(clean, string(filepath.Separator)) {
 			if part == ".." {
-				return "", fmt.Errorf("unsafe rel_path %q", meta.RelPath)
+				return nil, fmt.Errorf("unsafe rel_path %q", meta.RelPath)
 			}
 		}
-		dest = uniquePath(d.downloadDir, clean)
-		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-			return "", err
-		}
-	} else {
-		dest = uniquePath(d.downloadDir, sanitizeName(meta.Name))
+		name = clean
 	}
-	tmp := dest + ".adrop-part"
+
+	d.slotMu.Lock()
+	defer d.slotMu.Unlock()
+	if d.slots == nil {
+		d.slots = make(map[string]struct{})
+	}
+	dest := uniquePathExcept(d.downloadDir, name, func(candidate string) bool {
+		_, claimed := d.slots[candidate+partSuffix]
+		return claimed
+	})
+	if meta.RelPath != "" {
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return nil, err
+		}
+	}
+	tmp := dest + partSuffix
+	d.slots[tmp] = struct{}{}
+	var once sync.Once
+	return &fileSlot{
+		dest: dest,
+		tmp:  tmp,
+		release: func() {
+			once.Do(func() {
+				d.slotMu.Lock()
+				delete(d.slots, tmp)
+				d.slotMu.Unlock()
+			})
+		},
+	}, nil
+}
+
+// partMetaPath names the sidecar recording which original a .adrop-part
+// belongs to. It is needed because the SHA-256 a sender quotes in a
+// resume_query is the hash of *its* file: comparing that to the manifest entry
+// for the same file can never reveal that the partial on disk was left by a
+// different file which happened to share the name.
+func partMetaPath(tmp string) string { return tmp + ".meta" }
+
+func writePartMeta(tmp string, meta proto.FileMeta) {
+	_ = os.WriteFile(partMetaPath(tmp), []byte(strings.ToLower(meta.SHA256)), 0o644)
+}
+
+func removePart(tmp string) {
+	_ = os.Remove(tmp)
+	_ = os.Remove(partMetaPath(tmp))
+}
+
+// partialBytes reports how many bytes of slot's file are already on disk and
+// safe to resume onto: 0 when there is no partial, when it is already as large
+// as the expected file, or when it came from a different original.
+func partialBytes(slot *fileSlot, meta proto.FileMeta) int64 {
+	fi, err := os.Stat(slot.tmp)
+	if err != nil || fi.Size() == 0 || fi.Size() >= meta.Size {
+		return 0
+	}
+	recorded, err := os.ReadFile(partMetaPath(slot.tmp))
+	if err != nil || !strings.EqualFold(strings.TrimSpace(string(recorded)), meta.SHA256) {
+		removePart(slot.tmp) // stale partial from a different file (or a pre-sidecar one)
+		return 0
+	}
+	return fi.Size()
+}
+
+// receiveOneFile streams chunks for a single file into the slot's .adrop-part
+// file, verifying the SHA-256 from the manifest before renaming it into place.
+//
+// resumeOffset > 0 means the .adrop-part already has that many bytes; the
+// function appends to it and seeds the hasher from the existing data.
+//
+// A partial left behind by a dropped connection is deliberately kept so the
+// next attempt can resume from it; only a partial that cannot be trusted
+// (integrity failure, protocol violation) is removed.
+func (d *Daemon) receiveOneFile(conn *tls.Conn, meta proto.FileMeta, slot *fileSlot, resumeOffset int64) (string, error) {
+	dest, tmp := slot.dest, slot.tmp
 
 	hasher := sha256.New()
 	var got int64
@@ -296,23 +386,27 @@ func (d *Daemon) receiveOneFile(conn *tls.Conn, meta proto.FileMeta, resumeOffse
 	if err != nil {
 		return "", err
 	}
+	writePartMeta(tmp, meta)
 
 	w := io.MultiWriter(f, hasher)
-	cleanup := func() { f.Close(); os.Remove(tmp) }
+	// keep closes the file but leaves the partial in place: the bytes written
+	// so far are a valid prefix, so the next send can resume from them.
+	keep := func() { f.Close() }
+	discard := func() { f.Close(); removePart(tmp) }
 	for {
 		hdr, err := proto.ReadHeader(conn)
 		if err != nil {
-			cleanup()
+			keep()
 			return "", err
 		}
 		switch hdr.Type {
 		case proto.TypeChunk:
 			if got+hdr.Length > meta.Size {
-				cleanup()
+				discard()
 				return "", fmt.Errorf("payload exceeds declared size")
 			}
 			if _, err := io.CopyN(w, conn, hdr.Length); err != nil {
-				cleanup()
+				keep()
 				return "", err
 			}
 			got += hdr.Length
@@ -321,25 +415,26 @@ func (d *Daemon) receiveOneFile(conn *tls.Conn, meta proto.FileMeta, resumeOffse
 			d.logger.Printf("progress: file[%d] %d/%d bytes", hdr.FileIndex, hdr.BytesDone, hdr.TotalBytes)
 		case proto.TypeFileEnd:
 			if err := f.Close(); err != nil {
-				os.Remove(tmp)
+				removePart(tmp)
 				return "", err
 			}
 			if got != meta.Size {
-				os.Remove(tmp)
+				removePart(tmp)
 				return "", fmt.Errorf("size mismatch: got %d want %d", got, meta.Size)
 			}
 			sum := hex.EncodeToString(hasher.Sum(nil))
 			if !strings.EqualFold(sum, meta.SHA256) {
-				os.Remove(tmp)
+				removePart(tmp)
 				return "", fmt.Errorf("sha256 mismatch")
 			}
 			if err := os.Rename(tmp, dest); err != nil {
-				os.Remove(tmp)
+				removePart(tmp)
 				return "", err
 			}
+			_ = os.Remove(partMetaPath(tmp))
 			return dest, nil
 		default:
-			cleanup()
+			discard()
 			return "", fmt.Errorf("unexpected %s during file body", hdr.Type)
 		}
 	}
