@@ -23,7 +23,7 @@ RestartSec=2
 Environment=ADROP_PORT=53127
 # Relay base URL for FCM wake: when a direct dial to a phone fails, the daemon
 # POSTs /wake here so the phone opens its receive window, then retries.
-Environment=ADROP_RELAY=http://localhost:8080
+Environment=ADROP_RELAY=http://localhost:18080
 
 # default.target is reached on login for users with linger enabled, regardless
 # of whether the compositor activates graphical-session.target. This makes the

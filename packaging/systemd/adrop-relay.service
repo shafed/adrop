@@ -12,8 +12,8 @@ ConditionPathExists=%h/.config/adrop/fcm-service-account.json
 Type=simple
 # Loopback only: /wake is unauthenticated and sends a push to any FCM token it
 # is handed, so it must not be reachable from the LAN. The daemon talks to it
-# via ADROP_RELAY=http://localhost:8080.
-ExecStart=%h/.local/bin/adrop-relay -key %h/.config/adrop/fcm-service-account.json -addr 127.0.0.1:8080
+# via ADROP_RELAY=http://localhost:18080.
+ExecStart=%h/.local/bin/adrop-relay -key %h/.config/adrop/fcm-service-account.json -addr 127.0.0.1:18080
 Restart=on-failure
 RestartSec=5
 

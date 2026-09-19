@@ -85,9 +85,9 @@ systemctl --user daemon-reload
 systemctl --user enable --now adrop-relay
 ```
 
-The relay listens on **127.0.0.1:8080** only — `/wake` is unauthenticated and
+The relay listens on **127.0.0.1:18080** only — `/wake` is unauthenticated and
 pushes to whatever FCM token it is given, so it must not be reachable from the
-LAN. The daemon finds it via `ADROP_RELAY` (set to `http://localhost:8080` in
+LAN. The daemon finds it via `ADROP_RELAY` (set to `http://localhost:18080` in
 the packaged unit).
 
 `adrop.service` declares `Wants=adrop-relay.service`, so the relay comes up with
@@ -98,7 +98,7 @@ systemd skip it instead of crash-looping.
 
 **If wake stops working,** check the relay first — `systemctl --user status
 adrop-relay`. A stopped relay shows up in the daemon's journal as
-`FCM wake failed: Post "http://localhost:8080/wake": … connection refused`.
+`FCM wake failed: Post "http://localhost:18080/wake": … connection refused`.
 
 ### GUI
 
