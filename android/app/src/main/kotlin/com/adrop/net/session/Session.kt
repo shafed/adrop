@@ -296,6 +296,9 @@ private fun receiveOneFile(
                 when (hdr.type) {
                     MsgType.CHUNK -> {
                         val chunkLen = hdr.length ?: 0L
+                        if (chunkLen < 0) {
+                            throw SessionException("negative chunk length $chunkLen for ${meta.name}")
+                        }
                         if (got + chunkLen > meta.size) {
                             throw SessionException("payload exceeds declared size for ${meta.name}")
                         }
@@ -350,7 +353,7 @@ private fun receiveOneFile(
     }
 }
 
-private fun receiveClipboard(
+internal fun receiveClipboard(
     inp: InputStream,
     out: OutputStream,
     peerName: String,
@@ -361,6 +364,9 @@ private fun receiveClipboard(
         throw SessionException("expected clipboard, got ${hdr.type}")
     }
     val len = hdr.length ?: 0L
+    if (len < 0 || len > MAX_CLIPBOARD_SIZE) {
+        throw SessionException("clipboard payload of $len bytes (limit $MAX_CLIPBOARD_SIZE)")
+    }
     val mime = hdr.mime ?: "text/plain"
     val buf = ByteArray(len.toInt())
     var offset = 0

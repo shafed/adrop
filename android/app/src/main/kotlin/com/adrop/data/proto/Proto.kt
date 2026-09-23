@@ -35,6 +35,13 @@ const val MAX_HEADER_SIZE = 1 shl 20
 /** File payload per Chunk message: 256 KiB. */
 const val CHUNK_SIZE = 256 * 1024
 
+/**
+ * Upper bound on a clipboard payload (mirrors Go's proto.MaxClipboardSize).
+ * The receiver reads it into memory in one piece, so the declared length is
+ * checked before allocating.
+ */
+const val MAX_CLIPBOARD_SIZE = 32 shl 20
+
 // ---------------------------------------------------------------------------
 // Message type constants (match Go's TypeXxx consts exactly)
 // ---------------------------------------------------------------------------
