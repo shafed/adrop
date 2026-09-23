@@ -341,6 +341,9 @@ func (d *Daemon) SendClipboard(ctx context.Context, target string, data []byte, 
 	if mime == "" {
 		mime = "text/plain"
 	}
+	if len(data) > proto.MaxClipboardSize {
+		return fmt.Errorf("clipboard is %d bytes, over the %d-byte limit", len(data), proto.MaxClipboardSize)
+	}
 	conn, dev, err := d.dialPeer(ctx, target)
 	if err != nil {
 		return err

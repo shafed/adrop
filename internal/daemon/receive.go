@@ -114,6 +114,11 @@ func (d *Daemon) receiveClipboard(ctx context.Context, conn *tls.Conn, peerName 
 	if hdr.Type != proto.TypeClipboardData {
 		return fmt.Errorf("expected clipboard data, got %s", hdr.Type)
 	}
+	if hdr.Length < 0 || hdr.Length > proto.MaxClipboardSize {
+		err := fmt.Errorf("clipboard payload of %d bytes (limit %d)", hdr.Length, proto.MaxClipboardSize)
+		_ = proto.WriteControl(conn, proto.Header{Type: proto.TypeAck, OK: false, Error: err.Error()})
+		return err
+	}
 	buf := make([]byte, hdr.Length)
 	if _, err := io.ReadFull(conn, buf); err != nil {
 		return fmt.Errorf("read clipboard payload: %w", err)
@@ -401,6 +406,10 @@ func (d *Daemon) receiveOneFile(conn *tls.Conn, meta proto.FileMeta, slot *fileS
 		}
 		switch hdr.Type {
 		case proto.TypeChunk:
+			if hdr.Length < 0 {
+				discard()
+				return "", fmt.Errorf("negative chunk length %d", hdr.Length)
+			}
 			if got+hdr.Length > meta.Size {
 				discard()
 				return "", fmt.Errorf("payload exceeds declared size")

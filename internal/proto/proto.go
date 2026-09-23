@@ -36,6 +36,10 @@ const MaxHeaderSize = 1 << 20 // 1 MiB of JSON header is already huge
 // ChunkSize is the file payload size per Chunk message.
 const ChunkSize = 256 * 1024
 
+// MaxClipboardSize bounds a clipboard payload. Unlike file chunks it is read
+// into memory in one piece, so the receiver must not take the length on faith.
+const MaxClipboardSize = 32 << 20
+
 // Type enumerates message kinds.
 type Type string
 
