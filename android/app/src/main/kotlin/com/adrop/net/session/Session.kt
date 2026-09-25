@@ -83,7 +83,7 @@ suspend fun sendFiles(
         // Chunks — emit a TypeProgress frame after each one.
         // Skip resumeOffset bytes from the source stream before sending.
         var bytesSent = resumeOffset
-        openFile(i).use { stream ->
+        (if (meta.isDir) byteArrayOf().inputStream() else openFile(i)).use { stream ->
             if (resumeOffset > 0L) {
                 var remaining = resumeOffset
                 val skipBuf = ByteArray(CHUNK_SIZE)
@@ -210,11 +210,20 @@ private fun receiveFiles(
 ): SessionResult {
     if (manifest.isEmpty()) throw SessionException("empty file manifest")
 
+    manifest.forEach { meta ->
+        pathParts(meta.relPath ?: meta.name)
+        require(meta.size >= 0 && (!meta.isDir || (meta.size == 0L && meta.sha256.isEmpty() && meta.relPath != null))) { "Invalid manifest entry" }
+    }
+    val folders = if (manifest.any { it.isDir || !it.relPath.isNullOrEmpty() }) FolderStorage.Receiver(context) else null
     val received = mutableListOf<ReceivedFile>()
+    val completed = mutableSetOf<Int>()
 
     while (true) {
         val hdr = readHeader(inp)
-        if (hdr.type == MsgType.SESSION_END) break
+        if (hdr.type == MsgType.SESSION_END) {
+            check(completed.size == manifest.size) { "Incomplete transfer" }
+            break
+        }
         // TypeProgress frames may appear between file_header messages; forward
         // them to the caller and keep waiting for the next file_header.
         if (hdr.type == MsgType.PROGRESS) {
@@ -239,10 +248,12 @@ private fun receiveFiles(
             throw SessionException("file_index $idx out of range [0, ${manifest.size})")
         }
         val meta = manifest[idx]
+        check(idx !in completed) { "Duplicate entry" }
 
-        val result = runCatching { receiveOneFile(context, inp, meta, onProgress) }
+        val result = runCatching { receiveOneFile(context, inp, meta, onProgress, folders) }
         if (result.isSuccess) {
             received.add(result.getOrThrow())
+            completed.add(idx)
             writeControl(out, Header(type = MsgType.ACK, fileIndex = idx, ok = true))
         } else {
             val msg = result.exceptionOrNull()?.message ?: "unknown error"
@@ -261,13 +272,17 @@ private fun receiveOneFile(
     inp: InputStream,
     meta: FileMeta,
     onProgress: FileProgressFn? = null,
+    folders: FolderStorage.Receiver? = null,
 ): ReceivedFile {
     val digest = MessageDigest.getInstance("SHA-256")
 
-    // If the sender set a relative path, use it as the display name so the
-    // user can see the folder structure. MediaStore flattens Downloads into a
-    // single directory, so the path becomes part of the filename.
-    val displayName = if (!meta.relPath.isNullOrEmpty()) meta.relPath.replace('/', '_') else meta.name
+    val relativePath = meta.relPath ?: meta.name
+    val displayName = pathParts(relativePath).last()
+    if (meta.isDir) {
+        val end = readHeader(inp)
+        check(end.type == MsgType.FILE_END && (end.length ?: 0L) == 0L) { "Invalid directory body" }
+        return ReceivedFile(relativePath, requireNotNull(folders).directory(relativePath))
+    }
 
     // Prepare MediaStore entry in Downloads.
     val values = ContentValues().apply {
@@ -284,7 +299,7 @@ private fun receiveOneFile(
     } else {
         MediaStore.Downloads.EXTERNAL_CONTENT_URI
     }
-    val uri = resolver.insert(collection, values)
+    val uri = (if (folders != null) folders.file(relativePath, guessMime(meta.name)) else resolver.insert(collection, values))
         ?: throw SessionException("MediaStore insert failed for ${meta.name}")
 
     try {
@@ -341,14 +356,14 @@ private fun receiveOneFile(
         }
 
         // Mark as no longer pending so it's visible in other apps.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        if (folders == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val done = ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }
             resolver.update(uri, done, null, null)
         }
         return ReceivedFile(displayName, uri)
     } catch (e: Exception) {
         // Delete the partial entry on any failure.
-        resolver.delete(uri, null, null)
+        if (folders != null) android.provider.DocumentsContract.deleteDocument(resolver, uri) else resolver.delete(uri, null, null)
         throw e
     }
 }

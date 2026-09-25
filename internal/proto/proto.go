@@ -81,14 +81,16 @@ const (
 
 // FileMeta describes one file in a session manifest.
 type FileMeta struct {
-	Name    string `json:"name"`              // base name only; no path components
-	Size    int64  `json:"size"`              // bytes
-	SHA256  string `json:"sha256"`            // hex digest for integrity check
+	IsDir   bool   `json:"is_dir,omitempty"`
+	Name    string `json:"name"`               // base name only; no path components
+	Size    int64  `json:"size"`               // bytes
+	SHA256  string `json:"sha256"`             // hex digest for integrity check
 	RelPath string `json:"rel_path,omitempty"` // relative path within a directory transfer
 }
 
 // Header is the JSON envelope prefixing every message.
 type Header struct {
+	Folders bool `json:"folders,omitempty"` // Hello: supports directory entries and relative paths
 	Type    Type `json:"type"`
 	Version int  `json:"version,omitempty"`
 
@@ -106,12 +108,12 @@ type Header struct {
 	FcmToken string `json:"fcm_token,omitempty"`
 
 	// SessionStart
-	Kind   SessionKind `json:"kind,omitempty"`
-	Files  []FileMeta  `json:"files,omitempty"`
+	Kind  SessionKind `json:"kind,omitempty"`
+	Files []FileMeta  `json:"files,omitempty"`
 	// Resume, when true, signals that the sender will emit a TypeResumeQuery
 	// before each TypeFileHeader. Old receivers that don't set Resume never
 	// see these frames, so the field is safe to add with omitempty.
-	Resume bool        `json:"resume,omitempty"`
+	Resume bool `json:"resume,omitempty"`
 
 	// SHA256 carries the file hash in TypeResumeQuery so the receiver can
 	// detect a partial file from a different original (hash mismatch → restart).

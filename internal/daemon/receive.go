@@ -46,6 +46,7 @@ func (d *Daemon) handlePeer(ctx context.Context, raw net.Conn) {
 	}
 	if err := proto.WriteControl(conn, proto.Header{
 		Type:        proto.TypeHello,
+		Folders:     true,
 		Version:     proto.ProtocolVersion,
 		Fingerprint: d.store.Fingerprint(),
 		Name:        d.name,
@@ -179,6 +180,7 @@ func (d *Daemon) receiveFilesWithProgress(ctx context.Context, conn *tls.Conn, p
 		slots[i] = s
 		return s, nil
 	}
+	completed := make(map[int]bool)
 	var saved []string
 	for {
 		hdr, err := proto.ReadHeader(conn)
@@ -186,6 +188,11 @@ func (d *Daemon) receiveFilesWithProgress(ctx context.Context, conn *tls.Conn, p
 			return emitErr(err)
 		}
 		if hdr.Type == proto.TypeSessionEnd {
+			if len(completed) != len(manifest) {
+				err := fmt.Errorf("incomplete transfer")
+				_ = proto.WriteControl(conn, proto.Header{Type: proto.TypeAck, Error: err.Error()})
+				return emitErr(err)
+			}
 			break
 		}
 		// TypeProgress is advisory: log it and keep waiting for the next frame.
@@ -211,7 +218,7 @@ func (d *Daemon) receiveFilesWithProgress(ctx context.Context, conn *tls.Conn, p
 		// Reply with TypeResumeOffer carrying the .adrop-part size (0 if none).
 		if hdr.Type == proto.TypeResumeQuery {
 			var partBytes int64
-			if resume && hdr.FileIndex >= 0 && hdr.FileIndex < len(manifest) {
+			if resume && hdr.FileIndex >= 0 && hdr.FileIndex < len(manifest) && !manifest[hdr.FileIndex].IsDir {
 				// A reservation failure (unsafe rel_path) is reported when the
 				// file_header for the same index arrives; here it only means
 				// "nothing to resume".
@@ -232,7 +239,27 @@ func (d *Daemon) receiveFilesWithProgress(ctx context.Context, conn *tls.Conn, p
 		if hdr.FileIndex < 0 || hdr.FileIndex >= len(manifest) {
 			return emitErr(fmt.Errorf("file index %d out of range", hdr.FileIndex))
 		}
+		if completed[hdr.FileIndex] {
+			return emitErr(fmt.Errorf("duplicate file index %d", hdr.FileIndex))
+		}
 		meta := manifest[hdr.FileIndex]
+		if meta.IsDir {
+			end, err := proto.ReadHeader(conn)
+			if err == nil && (end.Type != proto.TypeFileEnd || end.FileIndex != hdr.FileIndex || end.Length != 0 || meta.Size != 0 || meta.SHA256 != "") {
+				err = fmt.Errorf("invalid directory entry")
+			}
+			if err == nil {
+				err = d.createDirectory(meta.RelPath)
+			}
+			if err != nil {
+				_ = proto.WriteControl(conn, proto.Header{Type: proto.TypeAck, FileIndex: hdr.FileIndex, Error: err.Error()})
+				return emitErr(err)
+			}
+			completed[hdr.FileIndex] = true
+			saved = append(saved, meta.RelPath)
+			_ = proto.WriteControl(conn, proto.Header{Type: proto.TypeAck, FileIndex: hdr.FileIndex, OK: true})
+			continue
+		}
 		slot, err := slotFor(hdr.FileIndex)
 		if err != nil {
 			_ = proto.WriteControl(conn, proto.Header{
@@ -251,6 +278,7 @@ func (d *Daemon) receiveFilesWithProgress(ctx context.Context, conn *tls.Conn, p
 			})
 			return emitErr(fmt.Errorf("file %q: %w", meta.Name, err))
 		}
+		completed[hdr.FileIndex] = true
 		saved = append(saved, path)
 		_ = proto.WriteControl(conn, proto.Header{
 			Type: proto.TypeAck, FileIndex: hdr.FileIndex, OK: true,
@@ -288,13 +316,10 @@ type fileSlot struct {
 func (d *Daemon) reserveSlot(meta proto.FileMeta) (*fileSlot, error) {
 	name := sanitizeName(meta.Name)
 	if meta.RelPath != "" {
-		// Validate: reject any RelPath component that is "..".
-		clean := filepath.FromSlash(meta.RelPath)
-		for _, part := range strings.Split(clean, string(filepath.Separator)) {
-			if part == ".." {
-				return nil, fmt.Errorf("unsafe rel_path %q", meta.RelPath)
-			}
+		if !validRelPath(meta.RelPath) {
+			return nil, fmt.Errorf("unsafe rel_path %q", meta.RelPath)
 		}
+		clean := filepath.FromSlash(meta.RelPath)
 		name = clean
 	}
 
@@ -307,8 +332,8 @@ func (d *Daemon) reserveSlot(meta proto.FileMeta) (*fileSlot, error) {
 		_, claimed := d.slots[candidate+partSuffix]
 		return claimed
 	})
-	if meta.RelPath != "" {
-		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+	if meta.RelPath != "" && filepath.Dir(name) != "." {
+		if err := d.createDirectory(filepath.ToSlash(filepath.Dir(name))); err != nil {
 			return nil, err
 		}
 	}
@@ -455,4 +480,44 @@ func baseNames(paths []string) []string {
 		out[i] = filepath.Base(p)
 	}
 	return out
+}
+
+// validRelPath accepts portable relative paths only; never normalize away traversal.
+func validRelPath(p string) bool {
+	if p == "" || strings.ContainsAny(p, "\\:\x00") {
+		return false
+	}
+	for _, part := range strings.Split(p, "/") {
+		if part == "" || part == "." || part == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+func (d *Daemon) createDirectory(rel string) error {
+	if !validRelPath(rel) {
+		return fmt.Errorf("unsafe directory path %q", rel)
+	}
+	// os.Root confines filesystem operations even if a symlink changes concurrently.
+	root, err := os.OpenRoot(d.downloadDir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	current := ""
+	for _, part := range strings.Split(rel, "/") {
+		current = filepath.Join(current, part)
+		if err := root.Mkdir(current, 0o755); err != nil && !os.IsExist(err) {
+			return err
+		}
+		info, err := root.Lstat(current)
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("destination is not a directory: %s", current)
+		}
+	}
+	return nil
 }

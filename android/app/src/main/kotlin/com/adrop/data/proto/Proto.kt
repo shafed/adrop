@@ -86,6 +86,7 @@ data class FileMeta(
     @SerialName("size")     val size:    Long,
     @SerialName("sha256")   val sha256:  String,
     @SerialName("rel_path") val relPath: String? = null,
+    @SerialName("is_dir") val isDir: Boolean = false,
 )
 
 // ---------------------------------------------------------------------------
@@ -114,6 +115,7 @@ data class Header(
     // Resume handshake fields.
     @SerialName("resume")      val resume:      Boolean?        = null,
     @SerialName("sha256")      val sha256:      String?         = null,
+    @SerialName("folders") val folders: Boolean = false,
 )
 
 // ---------------------------------------------------------------------------

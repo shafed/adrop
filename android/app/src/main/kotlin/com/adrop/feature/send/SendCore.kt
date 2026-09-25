@@ -45,13 +45,25 @@ fun sendFilesNow(
     val identity = IdentityStore.getOrCreate(context)
 
     onPreparing?.invoke("Hashing selected files…")
-    val names = displayNames
-    val sizes = files.map { it.length() }
-    val manifest = buildManifest(
-        names    = names,
-        sizes    = sizes,
-        openFile = { i -> files[i].inputStream() },
-    )
+    require(files.size == displayNames.size)
+    val sources = mutableListOf<File>()
+    val manifest = mutableListOf<FileMeta>()
+    fun add(file: File, relative: String?, name: String) {
+        com.adrop.net.session.pathParts(relative ?: name)
+        if (file.isDirectory) {
+            manifest.add(FileMeta(name = name, size = 0, sha256 = "", relPath = relative ?: name, isDir = true))
+            sources.add(file)
+            val base = relative ?: name
+            val children = file.listFiles() ?: error("Cannot read $name")
+            children.sortedBy { it.name }.forEach { add(it, "$base/${it.name}", it.name) }
+        } else {
+            check(file.isFile) { "Not a regular file: $name" }
+            val meta = buildManifest(listOf(name), listOf(file.length())) { file.inputStream() }.single()
+            manifest.add(meta.copy(relPath = relative))
+            sources.add(file)
+        }
+    }
+    files.forEachIndexed { i, file -> add(file, null, displayNames[i]) }
 
     onPreparing?.invoke("Connecting to ${device.name}…")
     val socket = dial(device.addr, identity, trustMgr)
@@ -59,9 +71,10 @@ fun sendFilesNow(
         val out = s.outputStream.buffered()
         val inp = s.inputStream.buffered()
         writeHello(context, out, identity)
-        readHeader(inp)  // their hello
+        val hello = readHeader(inp)
+        check(manifest.none { it.isDir || it.relPath != null } || hello.folders) { "Peer does not support folders; update the receiving app" }
 
-        runBlockingSendFiles(out, inp, manifest, files, progress)
+        runBlockingSendFiles(out, inp, manifest, sources, progress)
     }
 }
 

@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/shafed/adrop/internal/config"
@@ -50,7 +49,7 @@ const (
 	mdnsRecoverTimeout = 2 * time.Second
 )
 
-func (d *Daemon) dialPeer(ctx context.Context, target string) (*tls.Conn, config.Device, error) {
+func (d *Daemon) dialPeer(ctx context.Context, target string, folders ...bool) (*tls.Conn, config.Device, error) {
 	dev, ok := d.store.Lookup(target)
 	if !ok {
 		return nil, config.Device{}, fmt.Errorf("no trusted device matching %q", target)
@@ -164,6 +163,10 @@ func (d *Daemon) dialPeer(ctx context.Context, target string) (*tls.Conn, config
 		conn.Close()
 		return nil, dev, err
 	}
+	if len(folders) > 0 && folders[0] && !theirHello.Folders {
+		conn.Close()
+		return nil, dev, fmt.Errorf("peer does not support folder transfers; update the receiving app")
+	}
 	d.store.UpdateFcmToken(fp, theirHello.FcmToken)
 	return conn, dev, nil
 }
@@ -207,7 +210,11 @@ func (d *Daemon) SendFiles(ctx context.Context, target string, paths []string, p
 	if err != nil {
 		return err
 	}
-	conn, dev, err := d.dialPeer(ctx, target)
+	needsFolders := false
+	for _, m := range manifest {
+		needsFolders = needsFolders || m.RelPath != "" || m.IsDir
+	}
+	conn, dev, err := d.dialPeer(ctx, target, needsFolders)
 	if err != nil {
 		return err
 	}
@@ -280,8 +287,12 @@ func (d *Daemon) SendFiles(ctx context.Context, target string, paths []string, p
 	if err := proto.WriteControl(conn, proto.Header{Type: proto.TypeSessionEnd}); err != nil {
 		return err
 	}
-	if _, err := proto.ReadHeader(conn); err != nil { // final session ack
+	ack, err := proto.ReadHeader(conn)
+	if err != nil {
 		return err
+	}
+	if ack.Type != proto.TypeAck || !ack.OK {
+		return fmt.Errorf("peer rejected session: %s", ack.Error)
 	}
 	d.store.SetLastPeer(dev.Fingerprint)
 	if progress != nil {
@@ -291,6 +302,12 @@ func (d *Daemon) SendFiles(ctx context.Context, target string, paths []string, p
 }
 
 func (d *Daemon) sendOneFile(ctx context.Context, conn *tls.Conn, index int, path string, m proto.FileMeta, resumeOffset int64, fp fileProgressFn) error {
+	if m.IsDir {
+		if err := proto.WriteControl(conn, proto.Header{Type: proto.TypeFileHeader, FileIndex: index}); err != nil {
+			return err
+		}
+		return proto.WriteControl(conn, proto.Header{Type: proto.TypeFileEnd, FileIndex: index})
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -384,11 +401,18 @@ func buildManifest(paths []string) ([]proto.FileMeta, []string, error) {
 	var metas []proto.FileMeta
 	var fsPaths []string
 	for _, p := range paths {
-		info, err := os.Stat(p)
+		p, err := filepath.Abs(p)
+		if err != nil {
+			return nil, nil, err
+		}
+		info, err := os.Lstat(p)
 		if err != nil {
 			return nil, nil, err
 		}
 		if !info.IsDir() {
+			if !info.Mode().IsRegular() {
+				return nil, nil, fmt.Errorf("not a regular file: %s", p)
+			}
 			sum, err := hashFile(p)
 			if err != nil {
 				return nil, nil, err
@@ -409,20 +433,25 @@ func buildManifest(paths []string) ([]proto.FileMeta, []string, error) {
 			if err != nil {
 				return err
 			}
-			if d.IsDir() {
-				return nil
-			}
 			rel, err := filepath.Rel(parentDir, entry)
 			if err != nil {
 				return err
 			}
 			// Reject any path that escapes via "..".
-			if strings.Contains(rel, "..") {
+			if !validRelPath(filepath.ToSlash(rel)) {
 				return fmt.Errorf("unsafe relative path %q", rel)
 			}
 			fi, err := d.Info()
 			if err != nil {
 				return err
+			}
+			if d.IsDir() {
+				metas = append(metas, proto.FileMeta{Name: d.Name(), RelPath: filepath.ToSlash(rel), IsDir: true})
+				fsPaths = append(fsPaths, entry)
+				return nil
+			}
+			if !fi.Mode().IsRegular() {
+				return fmt.Errorf("not a regular file: %s", entry)
 			}
 			sum, err := hashFile(entry)
 			if err != nil {

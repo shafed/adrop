@@ -43,6 +43,7 @@ private const val KEY_LAST_DEVICE_FP = "last_device_fingerprint"
 data class SendUiState(
     val devices:        List<TrustedDevice> = emptyList(),
     val selectedDevice: TrustedDevice?      = null,
+    val pickedTree: Uri? = null,
     val pickedUris:     List<Uri>           = emptyList(),
     val clipboardText:  String              = "",
     val clipboardMime:  ClipboardMimeMode   = ClipboardMimeMode.TEXT,
@@ -105,7 +106,51 @@ class SendViewModel(
     }
 
     fun setPickedUris(uris: List<Uri>) {
-        _state.update { it.copy(pickedUris = uris, result = null) }
+        _state.update { it.copy(pickedUris = uris, pickedTree = null, result = null) }
+    }
+
+    fun setPickedTree(uri: Uri) {
+        _state.update { it.copy(pickedTree = uri, pickedUris = emptyList(), result = null) }
+    }
+
+    fun sendFolder() {
+        val snapshot = _state.value
+        if (snapshot.isSending) return
+        val tree = snapshot.pickedTree ?: return
+        val device = snapshot.selectedDevice ?: return
+        _state.update { it.copy(isSending = true, sendPhase = SendPhase.PREPARING, result = null, transferProgress = "Preparing folder…") }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                val staging = java.io.File(context.cacheDir, "folder-${java.util.UUID.randomUUID()}")
+                try {
+                    check(staging.mkdirs()) { "Cannot prepare folder" }
+                    val folder = FolderStorage.copyTree(context, tree, staging)
+                    val devices = trustRepo.getAll()
+                    val trustMgr = PinningTrustManager(isTrusted = { fp -> devices.find { it.fingerprint == fp } })
+                    try {
+                        sendFilesNow(context, device, listOf(folder), trustMgr,
+                            onPreparing = { msg -> _state.update { it.copy(transferProgress = msg) } },
+                            progress = { msg -> _state.update { it.copy(sendPhase = SendPhase.TRANSFERRING, transferProgress = msg) } })
+                        SendResult.Success
+                    } catch (e: Exception) {
+                        if (!isUnreachable(e)) throw e
+                        outbox.enqueue(device.fingerprint, OutboxKind.FILES) { dir ->
+                            check(folder.copyRecursively(java.io.File(dir, "0000-${folder.name}"))) { "Cannot queue folder" }
+                        }
+                        SendWorker.enqueueForTarget(context, device.fingerprint)
+                        SendResult.Queued
+                    }
+                } catch (e: Exception) {
+                    SendResult.Error(e.message ?: "Folder transfer failed")
+                } finally {
+                    staging.deleteRecursively()
+                }
+            }
+            if (result == SendResult.Success || result == SendResult.Queued) {
+                prefs.edit().putString(KEY_LAST_DEVICE_FP, device.fingerprint).apply()
+            }
+            _state.update { it.copy(isSending = false, sendPhase = null, transferProgress = null, result = result) }
+        }
     }
 
     fun setClipboardText(text: String) {

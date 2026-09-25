@@ -24,9 +24,9 @@ func TestBuildManifest_Directory(t *testing.T) {
 		}
 	}
 	files := map[string]string{
-		filepath.Join(root, "docs", "report.pdf"):     "report content",
+		filepath.Join(root, "docs", "report.pdf"):       "report content",
 		filepath.Join(root, "docs", "sub", "notes.txt"): "notes content",
-		filepath.Join(root, "img.png"):                "png content",
+		filepath.Join(root, "img.png"):                  "png content",
 	}
 	for p, content := range files {
 		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
@@ -40,8 +40,8 @@ func TestBuildManifest_Directory(t *testing.T) {
 		t.Fatalf("buildManifest: %v", err)
 	}
 
-	if len(metas) != 3 {
-		t.Fatalf("want 3 entries, got %d", len(metas))
+	if len(metas) != 6 {
+		t.Fatalf("want 6 entries, got %d", len(metas))
 	}
 	if len(fsPaths) != len(metas) {
 		t.Fatalf("fsPaths length %d != metas length %d", len(fsPaths), len(metas))
@@ -64,6 +64,9 @@ func TestBuildManifest_Directory(t *testing.T) {
 	// Verify the expected relative paths are present (order may vary).
 	dirBase := filepath.Base(root)
 	want := []string{
+		dirBase,
+		dirBase + "/docs",
+		dirBase + "/docs/sub",
 		dirBase + "/docs/report.pdf",
 		dirBase + "/docs/sub/notes.txt",
 		dirBase + "/img.png",

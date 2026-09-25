@@ -22,6 +22,11 @@ which is also how the protocol is integration-tested.
 - **Multi-file, single-session transfer.** `adrop send <peer> a.pdf b.jpg` sends
   all files in one session; each file's SHA-256 is verified by the receiver,
   which discards mismatches.
+- **Folder transfer.** Send a folder recursively, including empty directories, with
+  `adrop send <peer> /path/to/folder`. Both devices must support folder transfers.
+  On Android use **Pick Folder** to send; choose **Receive Folder** on the home
+  screen before receiving folders. Folder paths remain intact, including offline
+  queued sends. Symbolic links and special files are rejected.
 - **Safe receive.** Files land in `~/Downloads`; name collisions auto-rename
   (`file.pdf` → `file (1).pdf`). Never overwrites, never prompts.
 - **Clipboard push.** `adrop clip <peer>` pushes the local Wayland clipboard
@@ -232,5 +237,22 @@ with SHA-256 verification, auto-rename on collision, clipboard push,
 notifications, Unix-socket IPC, systemd user unit, device revocation,
 self-healing stored peer address on every inbound connect.
 
-Deferred (SPEC Phase 2): FCM wake, resume/chunked retransmit, folder transfer,
+Deferred (SPEC Phase 2): FCM wake, resume/chunked retransmit,
 rich clipboard formats, mDNS discovery, relay fallback, per-file progress UI.
+
+### Folder protocol extension
+
+Receivers advertise `folders: true` in Hello. Senders require it whenever a
+manifest includes relative paths or directory entries; older receivers get an
+explicit update error instead of a flattened transfer. A directory entry has
+`is_dir: true`, `rel_path`, `size: 0`, and an empty `sha256`. It uses the same
+resume/header/end/ack sequence as a file, with no chunks and a zero resume offset.
+Relative paths include the selected root folder. Absolute paths, traversal,
+backslashes, colons and empty components are rejected.
+
+On PC existing directories are reused and colliding files get numbered names.
+On Android each incoming root folder is created with a free name in the chosen
+receive directory; descendants use that same root. Choose a writable subfolder
+(e.g. `Download/adrop`) because Android 11+ disallows granting the Download root.
+Ordinary standalone files still go to Downloads. Android folder transfers are
+restarted after interruption; PC file contents retain the existing resume support.

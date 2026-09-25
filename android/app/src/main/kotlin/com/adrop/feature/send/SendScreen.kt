@@ -49,6 +49,10 @@ fun SendScreen(
         if (uris.isNotEmpty()) vm.setPickedUris(uris)
     }
 
+    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) vm.setPickedTree(uri)
+    }
+
     // Image picker for clipboard PNG mode
     val imagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -127,10 +131,15 @@ fun SendScreen(
                         else "${state.pickedUris.size} file(s) selected"
                     )
                 }
-                if (state.pickedUris.isNotEmpty()) {
+                OutlinedButton(
+                    onClick = { folderPicker.launch(null) },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !state.isSending,
+                ) { Text(if (state.pickedTree == null) "Pick Folder" else "Folder selected") }
+                if (state.pickedUris.isNotEmpty() || state.pickedTree != null) {
                     Spacer(Modifier.height(8.dp))
                     Button(
-                        onClick  = { vm.sendFiles() },
+                        onClick  = { if (state.pickedTree != null) vm.sendFolder() else vm.sendFiles() },
                         enabled  = !state.isSending && state.selectedDevice != null,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
@@ -141,7 +150,7 @@ fun SendScreen(
                         } else {
                             Icon(Icons.Default.Send, contentDescription = null)
                             Spacer(Modifier.width(8.dp))
-                            Text("Send Files")
+                            Text(if (state.pickedTree != null) "Send Folder" else "Send Files")
                         }
                     }
 

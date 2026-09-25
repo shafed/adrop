@@ -281,6 +281,7 @@ class ReceiveForegroundService : Service() {
 
                 writeControl(out, Header(
                     type        = MsgType.HELLO,
+                    folders     = true,
                     version     = PROTOCOL_VERSION,
                     fingerprint = identity.fingerprint,
                     name        = Build.MODEL,

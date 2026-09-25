@@ -42,6 +42,15 @@ fun HomeScreen(
     navBackStackEntry: NavBackStackEntry? = null,
 ) {
     val context = LocalContext.current
+    var receiveFolder by remember { mutableStateOf(com.adrop.net.session.FolderStorage.destination(context)) }
+    var folderError by remember { mutableStateOf<String?>(null) }
+    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            runCatching { com.adrop.net.session.FolderStorage.setDestination(context, uri) }
+                .onSuccess { receiveFolder = uri }
+                .onFailure { folderError = it.message ?: "Cannot use this folder" }
+        }
+    }
 
     // Observe live service state (isRunning + countdown) from ReceiveWindowState.
     val receiveState by ReceiveWindowState.stateFlow.collectAsState()
@@ -49,6 +58,9 @@ fun HomeScreen(
 
     // Snackbar for receive-window errors and pair-success confirmations.
     val snackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(folderError) {
+        folderError?.let { snackbarHostState.showSnackbar(it); folderError = null }
+    }
     var notificationPermissionRequestInFlight by remember { mutableStateOf(false) }
     var notificationPermissionDeniedEvents by remember { mutableStateOf(0) }
 
@@ -247,6 +259,10 @@ fun HomeScreen(
                         )
                     }
                 }
+            }
+
+            OutlinedButton(onClick = { folderPicker.launch(receiveFolder) }, modifier = Modifier.fillMaxWidth()) {
+                Text(if (receiveFolder == null) "Choose Receive Folder" else "Receive Folder: ${receiveFolder?.lastPathSegment?.substringAfterLast(':')}")
             }
 
             // Action buttons
