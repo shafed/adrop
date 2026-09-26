@@ -1,8 +1,9 @@
 package com.adrop.net.session
 
 import android.content.Context
-import android.content.Intent
 import android.net.Uri
+import android.os.Environment
+import android.provider.MediaStore
 import android.provider.DocumentsContract as Docs
 import java.io.File
 
@@ -15,15 +16,6 @@ internal fun pathParts(path: String): List<String> {
 }
 
 object FolderStorage {
-    fun destination(context: Context): Uri? = context.getSharedPreferences("folder_receive", Context.MODE_PRIVATE)
-        .getString("tree", null)?.let(Uri::parse)
-
-    fun setDestination(context: Context, uri: Uri) {
-        context.contentResolver.takePersistableUriPermission(uri,
-            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-        context.getSharedPreferences("folder_receive", Context.MODE_PRIVATE).edit().putString("tree", uri.toString()).apply()
-    }
-
     private fun root(tree: Uri) = Docs.buildDocumentUriUsingTree(tree, Docs.getTreeDocumentId(tree))
 
     private data class Entry(val uri: Uri, val name: String, val directory: Boolean)
@@ -62,31 +54,43 @@ object FolderStorage {
         return File(destination, name).also { copy(source, it, true, 0) }
     }
 
-    /** One receiver per session: keep renamed directory URIs for all descendants. */
+    /**
+     * One receiver per session: folders land in Downloads via MediaStore, each
+     * incoming root under a name adrop has not used yet. MediaStore cannot hold
+     * an empty directory, so empty folders are not recreated.
+     */
     class Receiver(private val context: Context) {
-        private val tree = destination(context) ?: error("Choose a receive folder on the home screen first")
-        private val directories = mutableMapOf("" to root(tree))
-        fun directory(path: String): Uri {
-            val parts = pathParts(path)
-            var key = ""
-            var parent = directories.getValue("")
-            for (part in parts) {
-                key = if (key.isEmpty()) part else "$key/$part"
-                parent = directories.getOrPut(key) { create(parent, part, Docs.Document.MIME_TYPE_DIR) }
-            }
-            return parent
+        private val roots = mutableMapOf<String, String>()
+        private val used by lazy { usedRoots() }
+
+        fun directory(path: String) {
+            root(pathParts(path).first())
         }
-        fun file(path: String, mime: String): Uri {
+
+        /** MediaStore RELATIVE_PATH for a file at [path], e.g. "Download/tree (1)/sub/". */
+        fun relativePath(path: String): String {
             val parts = pathParts(path)
-            val parent = if (parts.size == 1) directories.getValue("") else directory(parts.dropLast(1).joinToString("/"))
-            return create(parent, parts.last(), mime)
+            val dirs = if (parts.size == 1) emptyList() else listOf(root(parts.first())) + parts.drop(1).dropLast(1)
+            return (listOf(Environment.DIRECTORY_DOWNLOADS) + dirs).joinToString("/", postfix = "/")
         }
-        private fun create(parent: Uri, name: String, mime: String): Uri {
-            val existing = children(context, tree, parent).map { it.name }.toSet()
+
+        private fun root(name: String) = roots.getOrPut(name) {
             var candidate = name
             var n = 1
-            while (candidate in existing) { candidate = "$name (${n++})" }
-            return Docs.createDocument(context.contentResolver, parent, mime, candidate) ?: error("Cannot create $candidate")
+            while (candidate in used) { candidate = "$name (${n++})" }
+            used.add(candidate)
+            candidate
+        }
+
+        private fun usedRoots(): MutableSet<String> {
+            val prefix = Environment.DIRECTORY_DOWNLOADS + "/"
+            return context.contentResolver.query(
+                MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+                arrayOf(MediaStore.MediaColumns.RELATIVE_PATH),
+                "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?", arrayOf("$prefix%"), null,
+            )?.use { c ->
+                buildSet { while (c.moveToNext()) c.getString(0)?.removePrefix(prefix)?.substringBefore('/')?.let(::add) }
+            }.orEmpty().toMutableSet()
         }
     }
 }

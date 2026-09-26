@@ -281,7 +281,8 @@ private fun receiveOneFile(
     if (meta.isDir) {
         val end = readHeader(inp)
         check(end.type == MsgType.FILE_END && (end.length ?: 0L) == 0L) { "Invalid directory body" }
-        return ReceivedFile(relativePath, requireNotNull(folders).directory(relativePath))
+        requireNotNull(folders).directory(relativePath)
+        return ReceivedFile(relativePath, null)
     }
 
     // Prepare MediaStore entry in Downloads.
@@ -291,6 +292,7 @@ private fun receiveOneFile(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             put(MediaStore.Downloads.IS_PENDING, 1)
         }
+        if (folders != null) put(MediaStore.MediaColumns.RELATIVE_PATH, folders.relativePath(relativePath))
     }
 
     val resolver = context.contentResolver
@@ -299,7 +301,7 @@ private fun receiveOneFile(
     } else {
         MediaStore.Downloads.EXTERNAL_CONTENT_URI
     }
-    val uri = (if (folders != null) folders.file(relativePath, guessMime(meta.name)) else resolver.insert(collection, values))
+    val uri = resolver.insert(collection, values)
         ?: throw SessionException("MediaStore insert failed for ${meta.name}")
 
     try {
@@ -356,14 +358,14 @@ private fun receiveOneFile(
         }
 
         // Mark as no longer pending so it's visible in other apps.
-        if (folders == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val done = ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }
             resolver.update(uri, done, null, null)
         }
         return ReceivedFile(displayName, uri)
     } catch (e: Exception) {
         // Delete the partial entry on any failure.
-        if (folders != null) android.provider.DocumentsContract.deleteDocument(resolver, uri) else resolver.delete(uri, null, null)
+        resolver.delete(uri, null, null)
         throw e
     }
 }

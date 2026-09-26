@@ -24,8 +24,8 @@ which is also how the protocol is integration-tested.
   which discards mismatches.
 - **Folder transfer.** Send a folder recursively, including empty directories, with
   `adrop send <peer> /path/to/folder`. Both devices must support folder transfers.
-  On Android use **Pick Folder** to send; choose **Receive Folder** on the home
-  screen before receiving folders. Folder paths remain intact, including offline
+  On Android use **Pick Folder** to send; received folders land in Downloads
+  (Android 10+). Folder paths remain intact, including offline
   queued sends. Symbolic links and special files are rejected.
 - **Safe receive.** Files land in `~/Downloads`; name collisions auto-rename
   (`file.pdf` → `file (1).pdf`). Never overwrites, never prompts.
@@ -53,7 +53,7 @@ systemctl --user enable --now adrop
   `CGO_ENABLED=1`, a C toolchain and Fyne's Linux prerequisites: `libgl`/`mesa`,
   `libxcursor`, `libxrandr`, `libxinerama`, `libxi`, `libxxf86vm` dev headers.
 - `adrop-daemon` — what the systemd unit runs (`ExecStart=…/adrop-daemon
-  daemon`). Static and `CGO_ENABLED=0`, so the resident service does not depend
+daemon`). Static and `CGO_ENABLED=0`, so the resident service does not depend
   on the X11/GL libraries the GUI links and keeps running across a mesa/xorg
   change.
 
@@ -176,17 +176,18 @@ State lives under `$XDG_CONFIG_HOME/adrop` (or `~/.config/adrop`):
 
 ### Environment variables
 
-| Variable             | Purpose                            | Default                        |
-| -------------------- | ---------------------------------- | ------------------------------ |
-| `ADROP_CONFIG_DIR`   | config/state directory             | `~/.config/adrop`              |
-| `ADROP_SOCKET`       | CLI↔daemon Unix socket path        | `$XDG_RUNTIME_DIR/adrop.sock`  |
-| `ADROP_PORT`         | peer TLS listen port               | `53127`                        |
-| `ADROP_NAME`         | advertised device name             | system hostname                |
-| `ADROP_ADVERTISE_IP` | LAN IP in the pairing QR           | auto-detected (non-loopback)   |
-| `ADROP_DOWNLOAD_DIR` | where received files land          | `~/Downloads`                  |
+| Variable             | Purpose                     | Default                       |
+| -------------------- | --------------------------- | ----------------------------- |
+| `ADROP_CONFIG_DIR`   | config/state directory      | `~/.config/adrop`             |
+| `ADROP_SOCKET`       | CLI↔daemon Unix socket path | `$XDG_RUNTIME_DIR/adrop.sock` |
+| `ADROP_PORT`         | peer TLS listen port        | `53127`                       |
+| `ADROP_NAME`         | advertised device name      | system hostname               |
+| `ADROP_ADVERTISE_IP` | LAN IP in the pairing QR    | auto-detected (non-loopback)  |
+| `ADROP_DOWNLOAD_DIR` | where received files land   | `~/Downloads`                 |
 
 **`ADROP_NAME`** lets you give the PC a friendly name without changing the system
 hostname:
+
 ```sh
 ADROP_NAME=thinkpad-x1 adrop daemon
 # or via a systemd unit override:
@@ -196,6 +197,7 @@ ADROP_NAME=thinkpad-x1 adrop daemon
 
 **`ADROP_PORT`** is useful when running a second instance or when port 53127 is
 taken:
+
 ```sh
 ADROP_PORT=8877 adrop daemon
 ```
@@ -251,8 +253,8 @@ Relative paths include the selected root folder. Absolute paths, traversal,
 backslashes, colons and empty components are rejected.
 
 On PC existing directories are reused and colliding files get numbered names.
-On Android each incoming root folder is created with a free name in the chosen
-receive directory; descendants use that same root. Choose a writable subfolder
-(e.g. `Download/adrop`) because Android 11+ disallows granting the Download root.
-Ordinary standalone files still go to Downloads. Android folder transfers are
+On Android folders are written to Downloads through MediaStore: each incoming
+root gets a name adrop has not used there yet (`tree`, `tree (1)`, …) and
+descendants use that same root. MediaStore cannot hold an empty directory, so
+empty folders are not recreated on Android. Android folder transfers are
 restarted after interruption; PC file contents retain the existing resume support.
