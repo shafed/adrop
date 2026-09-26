@@ -140,6 +140,28 @@ func TestRevokeClearsLastPeer(t *testing.T) {
 	}
 }
 
+func TestOpenDropsStaleLastPeer(t *testing.T) {
+	phone := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	gone := "3333333333333333333333333333333333333333333333333333333333333333"
+	for _, tc := range []struct{ lastPeer, want string }{
+		{gone, ""},
+		{phone, phone},
+	} {
+		dir := t.TempDir()
+		data := `{"devices":[{"name":"phone","fingerprint":"` + phone + `","addr":"10.0.0.2:1"}],"last_peer":"` + tc.lastPeer + `"}`
+		if err := os.WriteFile(dir+"/devices.json", []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		s, err := Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.LastPeer() != tc.want {
+			t.Fatalf("last_peer %q loaded as %q, want %q", tc.lastPeer, s.LastPeer(), tc.want)
+		}
+	}
+}
+
 func TestAddDevicePersists(t *testing.T) {
 	dir := t.TempDir()
 	s1, _ := Open(dir)

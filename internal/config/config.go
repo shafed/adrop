@@ -229,7 +229,14 @@ func (s *Store) loadDevices() error {
 		return err
 	}
 	s.devices = f.Devices
-	s.lastPeer = f.LastPeer
+	// A last peer revoked before revokes cleared it would otherwise fail every
+	// peerless send with "no longer paired"; drop it on load.
+	for _, d := range s.devices {
+		if d.Fingerprint == f.LastPeer {
+			s.lastPeer = f.LastPeer
+			break
+		}
+	}
 	return nil
 }
 
