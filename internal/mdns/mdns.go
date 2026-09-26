@@ -53,7 +53,7 @@ func Advertise(ctx context.Context, name string, port int, fingerprint string) e
 	}
 }
 
-// Browse runs avahi-browse -rtp _adrop._tcp and calls onRecord for each
+// Browse runs avahi-browse -rp _adrop._tcp and calls onRecord for each
 // resolved peer record with (name, "addr:port", fingerprint-from-TXT).
 // It blocks until ctx is cancelled. If avahi-browse is not installed it logs a
 // warning and returns nil.
@@ -63,16 +63,17 @@ func Browse(ctx context.Context, onRecord func(name, addr, fp string)) error {
 		return nil
 	}
 	for {
-		if err := runBrowse(ctx, onRecord); err != nil && ctx.Err() == nil {
-			log.Printf("mdns: avahi-browse exited: %v; restarting in 5s", err)
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-time.After(5 * time.Second):
-			}
-		}
+		// Without -t avahi-browse keeps running and reports changes, so any
+		// exit is unexpected; back off rather than respawn in a tight loop.
+		err := runBrowse(ctx, "-rp", onRecord)
 		if ctx.Err() != nil {
 			return nil
+		}
+		log.Printf("mdns: avahi-browse exited (%v); restarting in 5s", err)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(5 * time.Second):
 		}
 	}
 }
@@ -87,11 +88,11 @@ func ResolveOnce(ctx context.Context, onRecord func(name, addr, fp string)) erro
 	if _, err := exec.LookPath("avahi-browse"); err != nil {
 		return nil
 	}
-	return runBrowse(ctx, onRecord)
+	return runBrowse(ctx, "-rtp", onRecord)
 }
 
-func runBrowse(ctx context.Context, onRecord func(name, addr, fp string)) error {
-	cmd := exec.CommandContext(ctx, "avahi-browse", "-rtp", "_adrop._tcp")
+func runBrowse(ctx context.Context, flags string, onRecord func(name, addr, fp string)) error {
+	cmd := exec.CommandContext(ctx, "avahi-browse", flags, "_adrop._tcp")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("stdout pipe: %w", err)

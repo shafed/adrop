@@ -162,6 +162,25 @@ func TestOpenDropsStaleLastPeer(t *testing.T) {
 	}
 }
 
+func TestUpdateAddrReportsChange(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	fp := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	_ = s.AddDevice(Device{Name: "phone", Fingerprint: fp, Addr: "10.0.0.2:1"})
+
+	if s.UpdateAddr(fp, "10.0.0.2:1") {
+		t.Fatal("same address reported as a change")
+	}
+	if !s.UpdateAddr(fp, "10.0.0.9:1") {
+		t.Fatal("new address not reported as a change")
+	}
+	if d, _ := s.Lookup("phone"); d.Addr != "10.0.0.9:1" {
+		t.Fatalf("addr = %q after update", d.Addr)
+	}
+	if s.UpdateAddr("2222222222222222222222222222222222222222222222222222222222222222", "10.0.0.3:1") {
+		t.Fatal("unknown device reported as a change")
+	}
+}
+
 func TestAddDevicePersists(t *testing.T) {
 	dir := t.TempDir()
 	s1, _ := Open(dir)

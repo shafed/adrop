@@ -281,19 +281,22 @@ func (s *Store) AddDevice(d Device) error {
 	return s.saveDevicesLocked()
 }
 
-// UpdateAddr refreshes the last-known address for a fingerprint, if present.
-func (s *Store) UpdateAddr(fingerprint, addr string) {
+// UpdateAddr refreshes the last-known address for a fingerprint, if present,
+// and reports whether the stored address changed.
+func (s *Store) UpdateAddr(fingerprint, addr string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.devices {
 		if s.devices[i].Fingerprint == fingerprint {
-			if s.devices[i].Addr != addr {
-				s.devices[i].Addr = addr
-				_ = s.saveDevicesLocked()
+			if s.devices[i].Addr == addr {
+				return false
 			}
-			return
+			s.devices[i].Addr = addr
+			_ = s.saveDevicesLocked()
+			return true
 		}
 	}
+	return false
 }
 
 // UpdateFcmToken stores the FCM registration token for a fingerprint, if present.

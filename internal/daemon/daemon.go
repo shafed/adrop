@@ -261,8 +261,9 @@ func (d *Daemon) startMDNS(ctx context.Context) {
 			if !trusted {
 				return
 			}
-			d.store.UpdateAddr(fp, addr)
-			d.logger.Printf("mDNS: updated addr for %s to %s", peerName, addr)
+			if d.store.UpdateAddr(fp, addr) {
+				d.logger.Printf("mDNS: updated addr for %s to %s", peerName, addr)
+			}
 		})
 		if err != nil {
 			d.logger.Printf("mdns: browse: %v", err)
@@ -294,8 +295,9 @@ func (d *Daemon) refreshAddrViaMDNS(ctx context.Context, want string) (seen bool
 		if want != "" && fp == want {
 			seen = true
 		}
-		d.store.UpdateAddr(fp, addr)
-		d.logger.Printf("mDNS: refreshed addr for %s to %s", name, addr)
+		if d.store.UpdateAddr(fp, addr) {
+			d.logger.Printf("mDNS: refreshed addr for %s to %s", name, addr)
+		}
 	})
 	if err != nil {
 		d.logger.Printf("mdns: resolve: %v", err)
