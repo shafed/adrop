@@ -112,6 +112,34 @@ func TestRenameDeviceSaveFailure(t *testing.T) {
 	}
 }
 
+func TestRevokeClearsLastPeer(t *testing.T) {
+	dir := t.TempDir()
+	s1, _ := Open(dir)
+	phone := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	laptop := "2222222222222222222222222222222222222222222222222222222222222222"
+	_ = s1.AddDevice(Device{Name: "phone", Fingerprint: phone, Addr: "10.0.0.2:1"})
+	_ = s1.AddDevice(Device{Name: "laptop", Fingerprint: laptop, Addr: "10.0.0.4:1"})
+	s1.SetLastPeer(phone)
+
+	if _, err := s1.RemoveDevice("laptop"); err != nil {
+		t.Fatal(err)
+	}
+	if s1.LastPeer() != phone {
+		t.Fatalf("revoking another device changed last peer to %q", s1.LastPeer())
+	}
+
+	if _, err := s1.RemoveDevice("phone"); err != nil {
+		t.Fatal(err)
+	}
+	if s1.LastPeer() != "" {
+		t.Fatalf("last peer still %q after revoking it", s1.LastPeer())
+	}
+	s2, _ := Open(dir)
+	if s2.LastPeer() != "" {
+		t.Fatalf("cleared last peer did not persist: %q", s2.LastPeer())
+	}
+}
+
 func TestAddDevicePersists(t *testing.T) {
 	dir := t.TempDir()
 	s1, _ := Open(dir)

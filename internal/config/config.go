@@ -317,6 +317,9 @@ func (s *Store) RemoveDevice(nameOrFp string) (int, error) {
 	for _, d := range s.devices {
 		if d.Name == nameOrFp || hasPrefix(d.Fingerprint, nameOrFp) {
 			removed++
+			if d.Fingerprint == s.lastPeer {
+				s.lastPeer = "" // don't leave sends defaulting to a revoked peer
+			}
 			continue
 		}
 		kept = append(kept, d)
