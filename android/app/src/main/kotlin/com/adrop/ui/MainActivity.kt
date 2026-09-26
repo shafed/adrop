@@ -9,6 +9,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -16,6 +17,7 @@ import androidx.compose.runtime.setValue
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.adrop.feature.camera.CameraScreen
 import com.adrop.feature.devices.DevicesScreen
 import com.adrop.feature.pair.ScanScreen
 import com.adrop.feature.send.SendScreen
@@ -97,7 +99,10 @@ private object Routes {
     const val SEND    = "send"
     const val DEVICES = "devices"
     const val SCAN    = "scan"
+    const val CAMERA  = "camera"
 }
+
+private const val CAPTURED_PHOTO = "capturedPhoto"
 
 @Composable
 private fun AdropNavGraph(deepLinkUri: String?, sharePayload: SharePayload?) {
@@ -143,7 +148,10 @@ private fun AdropNavGraph(deepLinkUri: String?, sharePayload: SharePayload?) {
                 navBackStackEntry = backStackEntry,
             )
         }
-        composable(Routes.SEND) {
+        composable(Routes.SEND) { backStackEntry ->
+            val captured by backStackEntry.savedStateHandle
+                .getStateFlow<String?>(CAPTURED_PHOTO, null)
+                .collectAsState()
             SendScreen(
                 onBack = {
                     if (!navController.popBackStack()) {
@@ -155,6 +163,18 @@ private fun AdropNavGraph(deepLinkUri: String?, sharePayload: SharePayload?) {
                 },
                 sharePayload = sharePayload,
                 onNavigatePair = { navController.navigate(Routes.SCAN) },
+                onTakePhoto = { navController.navigate(Routes.CAMERA) },
+                capturedPhoto = captured?.let(Uri::parse),
+                onCapturedPhotoConsumed = { backStackEntry.savedStateHandle[CAPTURED_PHOTO] = null },
+            )
+        }
+        composable(Routes.CAMERA) {
+            CameraScreen(
+                onCaptured = { uri ->
+                    navController.previousBackStackEntry?.savedStateHandle?.set(CAPTURED_PHOTO, uri.toString())
+                    navController.popBackStack()
+                },
+                onBack = { navController.popBackStack() },
             )
         }
         composable(Routes.DEVICES) {

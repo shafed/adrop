@@ -29,6 +29,9 @@ fun SendScreen(
     onBack: () -> Unit,
     sharePayload: SharePayload? = null,
     onNavigatePair: () -> Unit = {},
+    onTakePhoto: () -> Unit = {},
+    capturedPhoto: Uri? = null,
+    onCapturedPhotoConsumed: () -> Unit = {},
 ) {
     val state by vm.state.collectAsState()
     val clipboardManager = LocalClipboardManager.current
@@ -39,6 +42,14 @@ fun SendScreen(
             is SharePayload.Files -> vm.setPickedUris(sharePayload.uris)
             is SharePayload.Text  -> vm.setClipboardText(sharePayload.text)
             null                  -> Unit
+        }
+    }
+
+    // Photo handed back by CameraScreen becomes the file selection.
+    LaunchedEffect(capturedPhoto) {
+        if (capturedPhoto != null) {
+            vm.setPickedUris(listOf(capturedPhoto))
+            onCapturedPhotoConsumed()
         }
     }
 
@@ -136,6 +147,15 @@ fun SendScreen(
                     modifier = Modifier.fillMaxWidth(),
                     enabled = !state.isSending,
                 ) { Text(if (state.pickedTree == null) "Pick Folder" else "Folder selected") }
+                OutlinedButton(
+                    onClick = onTakePhoto,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !state.isSending,
+                ) {
+                    Icon(Icons.Default.PhotoCamera, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Take Photo")
+                }
                 if (state.pickedUris.isNotEmpty() || state.pickedTree != null) {
                     Spacer(Modifier.height(8.dp))
                     Button(

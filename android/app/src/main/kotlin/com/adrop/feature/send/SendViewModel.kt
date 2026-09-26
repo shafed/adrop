@@ -446,6 +446,8 @@ class SendViewModel(
     }
 
     private fun queryFileSize(uri: Uri): Long {
+        // Camera captures are plain files; the resolver has no SIZE column for them.
+        if (uri.scheme == "file") return java.io.File(uri.path!!).length()
         val cursor = context.contentResolver.query(uri, null, null, null, null)
         return cursor?.use { c ->
             if (c.moveToFirst()) {
