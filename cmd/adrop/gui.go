@@ -45,9 +45,10 @@ func displayAvailable() bool {
 // connection feeds the inbound row.
 func runGUI() error {
 	a := app.NewWithID("dev.adrop.gui")
-	a.Settings().SetTheme(adropTheme{}) // match the phone's Material 3 teal look
+	a.Settings().SetTheme(adropTheme{}) // the phone's Material 3 look
 	w := a.NewWindow("adrop")
-	w.Resize(fyne.NewSize(320, 380))
+	w.Resize(fyne.NewSize(columnWidth, 720)) // a phone-shaped column
+	w.SetPadded(false)                       // the TopAppBar band runs edge to edge; the body pads itself
 
 	g := newGUI(a, w)
 	w.SetContent(g.content())
@@ -86,29 +87,36 @@ type gui struct {
 	app fyne.App
 	win fyne.Window
 
-	peerSelect *widget.Select
-	manageBtn  *widget.Button
-	dropLabel  *widget.Label
-	chooseBtn  *widget.Button
-	clipBtn    *widget.Button
-	statusLbl  *widget.Label // daemon-not-running / hint line
-	startBtn   *widget.Button
-	pairBtn    *widget.Button
+	peerList  *fyne.Container // one selectable card per trusted device
+	noPeers   fyne.CanvasObject
+	manageBtn *widget.Button
+	chooseBtn *m3Button
+	clipBtn   *m3Button
+	pairBtn   *m3Button
 
-	outLabel *widget.Label
-	outBar   *widget.ProgressBar
-	fileList *widget.Label // names of files queued/sending in the current batch
-	inLabel  *widget.Label
-	inBar    *widget.ProgressBar
-	retryBtn *widget.Button
+	// The receive card: shown only while receiving, after a failed receive, or
+	// with the daemon down.
+	recvBlock *fyne.Container // the card plus its gap, hidden at rest
+	recvCard  *m3Card
+	recvTitle *widget.RichText
+	recvSub   *widget.RichText
+	startBtn  *m3Button
+	inBar     *m3Progress
 
-	mu      sync.Mutex
-	peers   []string         // device names, in dropdown order
-	devices []ipc.DeviceInfo // full trusted-device list, for the manage dialog
-	manage  func(error)      // redraws the open manage list; nil when closed
-	staged  []string         // last batch's files, kept for Retry on failure
-	pairing bool             // true while a pairing dialog owns a pair-show request
-	sending bool             // a send is in flight; serializes the send entry points
+	outLabel *widget.RichText
+	outBar   *m3Progress
+	fileList *widget.RichText // names of files queued/sending in the current batch
+	retryBtn *m3Button
+
+	mu         sync.Mutex
+	peers      []string         // device names, in list order
+	peer       string           // the selected send target
+	devices    []ipc.DeviceInfo // full trusted-device list, for the manage dialog
+	manage     func(error)      // redraws the open manage list; nil when closed
+	staged     []string         // last batch's files, kept for Retry on failure
+	pairing    bool             // true while a pairing dialog owns a pair-show request
+	sending    bool             // a send is in flight; serializes the send entry points
+	daemonDown bool             // the receive card is showing the daemon-not-running state
 
 	stopCh   chan struct{}
 	stopOnce sync.Once
@@ -118,79 +126,219 @@ func newGUI(a fyne.App, w fyne.Window) *gui {
 	return &gui{app: a, win: w, stopCh: make(chan struct{})}
 }
 
+// content lays the window out as the phone's Send screen: a TopAppBar, the
+// receive card from the home screen, then Target Device, Files and Clipboard
+// sections, in one scrolling column.
 func (g *gui) content() fyne.CanvasObject {
-	g.peerSelect = widget.NewSelect(nil, func(string) {})
-	g.peerSelect.PlaceHolder = "(no devices)"
-	g.manageBtn = widget.NewButtonWithIcon("", theme.SettingsIcon(), g.openManageDialog)
+	g.manageBtn = widget.NewButtonWithIcon("", theme.ComputerIcon(), g.openManageDialog)
+	g.manageBtn.Importance = widget.LowImportance // M3 IconButton: no container
 
-	g.dropLabel = widget.NewLabel("Drop files here")
-	g.dropLabel.Alignment = fyne.TextAlignCenter
-
-	// Icon + pill-style buttons echo the phone's Material 3 actions. The two
-	// primary actions get HighImportance (teal fill); helpers stay plain.
-	g.chooseBtn = widget.NewButtonWithIcon("Choose files…", theme.FolderOpenIcon(), g.chooseFiles)
-	g.chooseBtn.Importance = widget.HighImportance
-	g.clipBtn = widget.NewButtonWithIcon("Send clipboard", theme.ContentPasteIcon(), g.sendClipboard)
-	g.clipBtn.Importance = widget.HighImportance
-
-	g.statusLbl = widget.NewLabel("")
-	g.statusLbl.Wrapping = fyne.TextWrapWord
-	g.startBtn = widget.NewButtonWithIcon("Start daemon", theme.MediaPlayIcon(), g.startDaemon)
+	// Receive card. The phone's card holds an "Open to receive" switch; the PC
+	// daemon always listens, so this one only reports.
+	g.recvTitle = m3Text("", m3TitleMedium, m3OnSurface, true)
+	g.recvSub = m3Text("", m3BodySmall, m3OnSurfaceVariant, false)
+	g.inBar = newM3Progress()
+	g.inBar.inset = theme.InnerPadding() // text in the card is inset by RichText's padding
+	g.inBar.Hide()
+	g.startBtn = newM3Button(m3Tonal, "Start Daemon", theme.MediaPlayIcon(), g.startDaemon)
 	g.startBtn.Hide()
-	g.pairBtn = widget.NewButtonWithIcon("Pair device", theme.ContentAddIcon(), g.openPairDialog)
-	g.pairBtn.Importance = widget.HighImportance
-	g.pairBtn.Hide()
+	g.recvCard = newM3Card(m3SurfaceVariant, "", m3Inset(8, container.NewVBox(
+		container.New(tightV{}, g.recvTitle, g.recvSub),
+		g.inBar,
+		g.startBtn,
+	)))
+	g.recvBlock = container.NewVBox(g.recvCard, vgap(8))
+	g.setRecvIdle()
 
-	g.outLabel = widget.NewLabel("")
-	// A failed send now explains itself in a sentence or two (see dialFailure),
-	// and an unwrapped label would stretch the 320px window to fit it on one
-	// line. Wrap instead, in both directions.
-	g.outLabel.Wrapping = fyne.TextWrapWord
-	g.outBar = widget.NewProgressBar()
-	g.outBar.Hide()
+	// Target Device.
+	g.peerList = container.NewVBox()
+	g.pairBtn = newM3Button(m3Outlined, "Pair Device", theme.ContentAddIcon(), g.openPairDialog)
+	g.noPeers = container.NewVBox(
+		m3Text("No paired devices yet.", m3BodySmall, m3OnSurfaceVariant, false),
+		g.pairBtn,
+	)
+	g.noPeers.Hide()
 
-	// fileList lists every file in the current send batch, one per line.
-	g.fileList = widget.NewLabel("")
+	// Files. Picking one file sends it straight away; several go by drag-drop.
+	g.chooseBtn = newM3Button(m3Outlined, "Pick File", theme.DocumentIcon(), g.chooseFiles)
+
+	// Clipboard.
+	// Tonal, like the phone's main "Send File or Clipboard" button.
+	g.clipBtn = newM3Button(m3Tonal, "Send Clipboard", theme.MailSendIcon(), g.sendClipboard)
+
+	// Outbound status, below everything like the phone's snackbar.
+	g.fileList = m3Text("", m3BodySmall, m3OnSurfaceVariant, false)
 	g.fileList.Hide()
-
-	g.retryBtn = widget.NewButtonWithIcon("Retry", theme.ViewRefreshIcon(), g.retry)
+	g.outBar = newM3Progress()
+	g.outBar.Hide()
+	// A failed send explains itself in a sentence or two (see dialFailure), so
+	// the label wraps rather than stretching the window.
+	g.outLabel = m3Text("", m3BodySmall, m3OnSurfaceVariant, false)
+	g.retryBtn = newM3Button(m3Outlined, "Retry", theme.ViewRefreshIcon(), g.retry)
 	g.retryBtn.Hide()
 
-	g.inLabel = widget.NewLabel("")
-	g.inLabel.Wrapping = fyne.TextWrapWord
-	g.inBar = widget.NewProgressBar()
-	g.inBar.Hide()
-
 	body := container.NewVBox(
-		widget.NewLabel("Peer:"),
-		container.NewBorder(nil, nil, nil, g.manageBtn, g.peerSelect),
-		g.dropLabel,
+		g.recvBlock,
+		section("Target Device"),
+		g.peerList,
+		g.noPeers,
+		vgap(8),
+		section("Files"),
 		g.chooseBtn,
+		m3Text("Sends right away. Drop files onto this window to send several at once.",
+			m3BodySmall, m3OnSurfaceVariant, false),
+		vgap(8),
+		section("Clipboard"),
 		g.clipBtn,
-		widget.NewSeparator(),
-		g.statusLbl,
-		g.startBtn,
-		g.pairBtn,
+		vgap(8),
 		g.fileList,
-		g.outLabel,
 		g.outBar,
+		g.outLabel,
 		g.retryBtn,
-		g.inLabel,
-		g.inBar,
 	)
-	// Pin a flat "adrop" header at the top (like the phone's TopAppBar — plain
-	// text on the surface, no fill), with the padded body filling the rest.
-	return container.NewBorder(topBar(), nil, nil, nil, container.NewPadded(body))
+	return container.NewBorder(topBar(g.manageBtn), nil, nil, nil,
+		container.NewVScroll(column(m3Inset(16, body))))
 }
 
-// topBar renders a flat "adrop" header echoing the phone's Material 3
-// TopAppBar: the app name in bold foreground over the surface, no band. Using a
-// bold Label (not a raw canvas.Text) keeps the proper line height so the
-// glyph tops aren't clipped by the row's top edge.
-func topBar() fyne.CanvasObject {
-	title := widget.NewLabelWithStyle("adrop", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-	// Double padding gives the header breathing room like the phone's TopAppBar.
-	return container.NewPadded(container.NewPadded(title))
+// topBar is the phone's TopAppBar: the app name in titleLarge on a band of
+// surface, a shade lighter than the screen below it, with the paired-devices
+// action on the right.
+func topBar(action fyne.CanvasObject) fyne.CanvasObject {
+	title := m3Text("adrop", m3TitleLarge, m3OnSurface, false)
+	bar := m3Inset(8, container.NewBorder(nil, nil, nil, container.NewCenter(action), title))
+	return newM3Card(m3Surface, "", column(bar)).square()
+}
+
+// columnWidth is how wide the content gets: about a phone screen. A tiled or
+// maximized window centers the column instead of stretching every button
+// across the monitor.
+const columnWidth = 600
+
+// column centers content at no more than columnWidth.
+func column(content fyne.CanvasObject) fyne.CanvasObject {
+	return container.New(columnLayout{}, content)
+}
+
+type columnLayout struct{}
+
+func (columnLayout) MinSize(objs []fyne.CanvasObject) fyne.Size { return objs[0].MinSize() }
+
+func (columnLayout) Layout(objs []fyne.CanvasObject, s fyne.Size) {
+	w := min(s.Width, columnWidth)
+	objs[0].Move(fyne.NewPos((s.Width-w)/2, 0))
+	objs[0].Resize(fyne.NewSize(w, s.Height))
+}
+
+// section is a titleMedium heading over a block, as on the phone's Send screen.
+func section(title string) fyne.CanvasObject {
+	return m3Text(title, m3TitleMedium, m3OnSurface, true)
+}
+
+// tightV stacks text rows without VBox's padding, so a title and its subtitle
+// sit together as one block.
+type tightV struct{}
+
+func (tightV) MinSize(objs []fyne.CanvasObject) fyne.Size {
+	var s fyne.Size
+	for _, o := range objs {
+		if !o.Visible() {
+			continue
+		}
+		m := o.MinSize()
+		s.Width = max(s.Width, m.Width)
+		s.Height += m.Height - theme.InnerPadding()
+	}
+	return s.AddWidthHeight(0, theme.InnerPadding())
+}
+
+func (tightV) Layout(objs []fyne.CanvasObject, size fyne.Size) {
+	y := float32(0)
+	for _, o := range objs {
+		if !o.Visible() {
+			continue
+		}
+		h := o.MinSize().Height
+		o.Move(fyne.NewPos(0, y))
+		o.Resize(fyne.NewSize(size.Width, h))
+		y += h - theme.InnerPadding()
+	}
+}
+
+// deviceOption is one row of the phone's Target Device list: a radio mark,
+// the name, the address and the fingerprint tail, on a card that turns
+// primaryContainer with a primary outline when selected.
+func (g *gui) deviceOption(d ipc.DeviceInfo, selected bool) fyne.CanvasObject {
+	fill, border := fyne.ThemeColorName(m3Surface), fyne.ThemeColorName(m3OutlineVariant)
+	radio := theme.NewColoredResource(theme.RadioButtonIcon(), m3OnSurfaceVariant)
+	if selected {
+		fill, border = m3PrimaryContainer, theme.ColorNamePrimary
+		radio = theme.NewColoredResource(theme.RadioButtonCheckedIcon(), theme.ColorNamePrimary)
+	}
+	icon := widget.NewIcon(radio)
+
+	addr := d.Addr
+	if addr == "" {
+		addr = "No known address"
+	}
+	text := container.New(tightV{},
+		m3Text(d.Name, m3TitleSmall, m3OnSurface, true),
+		m3Text(addr, m3BodySmall, m3OnSurfaceVariant, false),
+		m3Text("Fingerprint …"+fingerprintSuffix(d.Fingerprint), m3LabelSmall, m3OnSurfaceVariant, false),
+	)
+	row := container.NewBorder(nil, nil, container.NewCenter(icon), nil, text)
+	card := newM3Card(fill, border, m3Inset(4, row))
+	name := d.Name
+	card.OnTapped = func() { g.selectPeer(name) }
+	return card
+}
+
+// fingerprintSuffix is the last 12 hex digits in groups of four, as the phone
+// shows them.
+func fingerprintSuffix(fp string) string {
+	if len(fp) > 12 {
+		fp = fp[len(fp)-12:]
+	}
+	var parts []string
+	for len(fp) > 4 {
+		parts = append(parts, fp[:4])
+		fp = fp[4:]
+	}
+	return strings.Join(append(parts, fp), " ")
+}
+
+// selectPeer makes name the send target and redraws the list.
+func (g *gui) selectPeer(name string) {
+	g.mu.Lock()
+	g.peer = name
+	g.mu.Unlock()
+	g.renderPeers()
+}
+
+// renderPeers rebuilds the Target Device list from the cached devices.
+func (g *gui) renderPeers() {
+	g.mu.Lock()
+	devs, sel := g.devices, g.peer
+	g.mu.Unlock()
+	g.peerList.RemoveAll()
+	for _, d := range devs {
+		g.peerList.Add(g.deviceOption(d, d.Name == sel))
+	}
+	g.peerList.Refresh()
+}
+
+// setRecvIdle takes the receive card away: at rest the daemon is simply
+// listening, which needs no card, and a finished receive already raised a
+// desktop notification.
+func (g *gui) setRecvIdle() {
+	g.recvBlock.Hide()
+}
+
+// showRecv puts the receive card up with a title, a detail line and a color.
+func (g *gui) showRecv(title, sub string, fill fyne.ThemeColorName) {
+	setM3Text(g.recvTitle, title)
+	setM3Text(g.recvSub, sub)
+	g.recvCard.SetColors(fill, "")
+	g.recvBlock.Show()
 }
 
 // ----- state / peer list -----
@@ -239,12 +387,12 @@ func (g *gui) refreshPeers() {
 			if rebuild != nil {
 				rebuild(nil) // keep an open manage dialog in step with the daemon
 			}
-			g.peerSelect.Options = names
 			if len(names) == 0 {
-				g.peerSelect.PlaceHolder = "(no devices)"
-				g.peerSelect.ClearSelected()
+				g.mu.Lock()
+				g.peer = ""
+				g.mu.Unlock()
 				g.setSendEnabled(false)
-				g.statusLbl.SetText("No paired devices yet.")
+				g.noPeers.Show()
 				g.pairBtn.Show()
 				if g.pairingActive() {
 					g.pairBtn.Disable()
@@ -253,21 +401,22 @@ func (g *gui) refreshPeers() {
 				}
 			} else {
 				g.setSendEnabled(true)
-				g.statusLbl.SetText("")
-				g.pairBtn.Hide()
+				g.noPeers.Hide()
 				// A refresh must not move the send target under the user: keep
 				// their pick if it still exists, and only then fall back to the
 				// last-used peer, then the first device.
-				sel := g.peerSelect.Selected
+				g.mu.Lock()
+				sel := g.peer
 				if sel == "" || !contains(names, sel) {
 					sel = last
 				}
 				if sel == "" || !contains(names, sel) {
 					sel = names[0]
 				}
-				g.peerSelect.SetSelected(sel)
+				g.peer = sel
+				g.mu.Unlock()
 			}
-			g.peerSelect.Refresh()
+			g.renderPeers()
 		})
 	}()
 }
@@ -337,8 +486,7 @@ func (g *gui) openManageDialog() {
 	status := widget.NewLabel("")
 	status.Wrapping = fyne.TextWrapWord
 
-	addBtn := widget.NewButtonWithIcon("Add device…", theme.ContentAddIcon(), g.openPairDialog)
-	addBtn.Importance = widget.HighImportance
+	addBtn := newM3Button(m3Filled, "Pair Device", theme.ContentAddIcon(), g.openPairDialog)
 
 	// rebuild redraws the list from the cached device set, or — when the refresh
 	// that fed it failed — says so and leaves the previous list alone rather than
@@ -497,7 +645,7 @@ func (g *gui) openPairDialog() {
 	uriLabel.Wrapping = fyne.TextWrapBreak
 	uriLabel.Hide()
 
-	copyBtn := widget.NewButtonWithIcon("Copy URI", theme.ContentCopyIcon(), func() {
+	copyBtn := newM3Button(m3Outlined, "Copy URI", theme.ContentCopyIcon(), func() {
 		if pairURI == "" {
 			return
 		}
@@ -676,7 +824,6 @@ func (g *gui) setSendEnabled(on bool) {
 	if on {
 		g.chooseBtn.Enable()
 		g.clipBtn.Enable()
-		g.peerSelect.Enable()
 	} else {
 		g.chooseBtn.Disable()
 		g.clipBtn.Disable()
@@ -700,7 +847,9 @@ func (g *gui) chooseFiles() {
 
 // currentPeer returns the selected peer name, or "" if none.
 func (g *gui) currentPeer() string {
-	return g.peerSelect.Selected
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.peer
 }
 
 // ----- sending -----
@@ -718,7 +867,7 @@ func (g *gui) showFiles(paths []string) {
 			names[i] = "• " + filepath.Base(p)
 		}
 		header := fmt.Sprintf("%d file(s):", len(paths))
-		g.fileList.SetText(header + "\n" + strings.Join(names, "\n"))
+		setM3Text(g.fileList, header+"\n"+strings.Join(names, "\n"))
 		g.fileList.Show()
 	})
 }
@@ -735,7 +884,7 @@ func (g *gui) beginSend() bool {
 	}
 	g.mu.Unlock()
 	if busy {
-		fyne.Do(func() { g.outLabel.SetText("⚠ a send is in progress") })
+		fyne.Do(func() { setM3Text(g.outLabel, "⚠ a send is in progress") })
 		return false
 	}
 	return true
@@ -747,7 +896,7 @@ func (g *gui) beginSend() bool {
 func (g *gui) sendFromInput(input string) {
 	paths, err := decodeFileURIs(input)
 	if err != nil {
-		fyne.Do(func() { g.outLabel.SetText("⚠ " + err.Error()) })
+		fyne.Do(func() { setM3Text(g.outLabel, "⚠ "+err.Error()) })
 		if len(paths) == 0 {
 			return
 		}
@@ -764,7 +913,7 @@ func (g *gui) sendPaths(paths []string) {
 	}
 	peer := g.currentPeer()
 	if peer == "" {
-		fyne.Do(func() { g.outLabel.SetText("⚠ pick a peer first") })
+		fyne.Do(func() { setM3Text(g.outLabel, "⚠ pick a peer first") })
 		return
 	}
 	if !g.beginSend() {
@@ -797,7 +946,7 @@ func (g *gui) retry() {
 func (g *gui) sendClipboard() {
 	peer := g.currentPeer()
 	if peer == "" {
-		fyne.Do(func() { g.outLabel.SetText("⚠ pick a peer first") })
+		fyne.Do(func() { setM3Text(g.outLabel, "⚠ pick a peer first") })
 		return
 	}
 	if !g.beginSend() {
@@ -814,7 +963,7 @@ func (g *gui) runSend(req ipc.Request, staged []string) {
 		g.outBar.Show()
 		g.outBar.SetValue(0)
 		g.retryBtn.Hide()
-		g.outLabel.SetText("↑ sending…")
+		setM3Text(g.outLabel, "↑ sending…")
 	})
 	err := roundtrip(req, func(r ipc.Response) {
 		if r.Line == "" {
@@ -823,7 +972,7 @@ func (g *gui) runSend(req ipc.Request, staged []string) {
 		line := r.Line
 		frac, ok := progressFraction(line)
 		fyne.Do(func() {
-			g.outLabel.SetText("↑ " + line)
+			setM3Text(g.outLabel, "↑ "+line)
 			if ok {
 				g.outBar.SetValue(frac)
 			}
@@ -832,7 +981,7 @@ func (g *gui) runSend(req ipc.Request, staged []string) {
 	fyne.Do(func() {
 		if err != nil {
 			g.outBar.Hide()
-			g.outLabel.SetText("⚠ " + err.Error())
+			setM3Text(g.outLabel, "⚠ "+err.Error())
 			if len(staged) > 0 {
 				g.retryBtn.Show() // keep staged files for a retry
 			}
@@ -842,7 +991,7 @@ func (g *gui) runSend(req ipc.Request, staged []string) {
 			return
 		}
 		g.outBar.SetValue(1)
-		g.outLabel.SetText("↑ done")
+		setM3Text(g.outLabel, "↑ done")
 		g.fileList.Hide() // batch complete; clear the list
 		g.mu.Lock()
 		g.staged = nil    // success: clear staging
@@ -965,12 +1114,20 @@ func (g *gui) renderEvent(e ipc.Event) {
 	}
 	frac := recvFraction(e)
 	fyne.Do(func() {
-		g.inLabel.SetText(text)
+		switch e.Kind {
+		case "recv-done":
+			g.inBar.Hide()
+			g.setRecvIdle()
+			return
+		case "recv-error":
+			g.inBar.Hide()
+			g.showRecv("Transfer failed", text, m3ErrorContainer) // stays until the next transfer
+			return
+		}
+		g.showRecv("Receiving transfer…", text, m3PrimaryContainer)
 		if frac >= 0 {
 			g.inBar.Show()
 			g.inBar.SetValue(frac)
-		} else if e.Kind == "recv-done" || e.Kind == "recv-error" {
-			g.inBar.Hide()
 		}
 	})
 }
@@ -979,7 +1136,11 @@ func (g *gui) renderEvent(e ipc.Event) {
 
 func (g *gui) showDaemonDown(err error) {
 	fyne.Do(func() {
-		g.statusLbl.SetText("⚠ daemon not running")
+		g.mu.Lock()
+		g.daemonDown = true
+		g.mu.Unlock()
+		g.showRecv("Daemon not running", "Start it to send and receive files.", m3ErrorContainer)
+		g.inBar.Hide()
 		g.startBtn.Show()
 		if g.pairBtn != nil {
 			g.pairBtn.Hide()
@@ -991,6 +1152,13 @@ func (g *gui) showDaemonDown(err error) {
 
 func (g *gui) clearDaemonDown() {
 	fyne.Do(func() {
+		g.mu.Lock()
+		wasDown := g.daemonDown
+		g.daemonDown = false
+		g.mu.Unlock()
+		if wasDown { // leave a receive in progress alone
+			g.setRecvIdle()
+		}
 		g.startBtn.Hide()
 		g.manageBtn.Enable()
 	})
@@ -1002,7 +1170,7 @@ func (g *gui) startDaemon() {
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			fyne.Do(func() {
-				g.statusLbl.SetText("⚠ start failed: " + strings.TrimSpace(string(out)))
+				setM3Text(g.recvSub, "Start failed: "+strings.TrimSpace(string(out)))
 			})
 			return
 		}
