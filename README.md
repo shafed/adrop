@@ -10,6 +10,13 @@ The Android side lives in `android/`. Because the daemon is symmetric — it bot
 serves and originates transfers — two PCs can pair and exchange files directly,
 which is also how the protocol is integration-tested.
 
+**Where this is going:** discovery of every adrop device on the LAN with
+tap-to-pair, transfers between paired devices outside a shared network (no own
+server: public Reticulum hubs to meet, then a direct ICE/QUIC channel), one Go
+core for all platforms with a Flutter UI on Linux and Android, Windows later.
+The target is described in [`SPEC.md`](SPEC.md), the order of work in
+[`PLAN.md`](PLAN.md). This README describes what exists today.
+
 ## Features (MVP)
 
 - **Pairing via QR.** `adrop pair show` prints a scannable QR (and the raw
@@ -106,6 +113,9 @@ adrop-relay`. A stopped relay shows up in the daemon's journal as
 `FCM wake failed: Post "http://localhost:18080/wake": … connection refused`.
 
 ### GUI
+
+> The window is built with Fyne and will be replaced by a Flutter UI
+> ([`PLAN.md`](PLAN.md), step 5). Until then it is the PC's window.
 
 A small drag-drop window for the PC side — drop files onto it to send to the
 last-used (or chosen) peer, paste a `file:///` path, push the clipboard, and
@@ -219,7 +229,8 @@ encoded as lowercase hex (64 chars). See [`internal/proto`](internal/proto/proto
 ## Layout
 
 ```
-cmd/adrop/            CLI + daemon entrypoint
+cmd/adrop/            CLI + daemon entrypoint (+ Fyne window under the gui tag)
+cmd/adrop-relay/      optional local FCM wake relay
 internal/config/      identity (TLS cert) + trusted-device store
 internal/proto/       wire framing & message types
 internal/transport/   pinned mutual-TLS dial/listen
@@ -228,19 +239,25 @@ internal/clipboard/   wl-copy / wl-paste wrappers
 internal/notify/      notify-send wrapper
 internal/ipc/         CLI↔daemon Unix-socket control protocol
 internal/daemon/      daemon: receive, send, pairing, IPC handling
+internal/mdns/        _adrop._tcp advertise/browse via avahi
+internal/fcm/         FCM HTTP v1 sender used by adrop-relay
 android/              Android app (Kotlin/Compose)
 packaging/systemd/    systemd user unit
 ```
 
 ## Status vs. SPEC
 
-Implemented: pairing, pinned-TLS transport, bidirectional multi-file transfer
-with SHA-256 verification, auto-rename on collision, clipboard push,
-notifications, Unix-socket IPC, systemd user unit, device revocation,
-self-healing stored peer address on every inbound connect.
+Implemented: QR pairing, pinned-TLS transport, bidirectional multi-file and
+folder transfer with SHA-256 verification, resume of interrupted files on the
+PC, auto-rename on collision, clipboard push, notifications, Unix-socket IPC,
+systemd user unit, device revocation, self-healing stored peer address on every
+inbound connect, mDNS address updates for paired devices, optional FCM wake of
+the phone via `adrop-relay`.
 
-Deferred (SPEC Phase 2): FCM wake, resume/chunked retransmit,
-rich clipboard formats, mDNS discovery, relay fallback, per-file progress UI.
+Not yet (see [`PLAN.md`](PLAN.md)): discovery of unpaired devices and
+tap-to-pair, transfers outside a shared LAN, a phone that receives while the
+app is closed, the shared Go core and Flutter UI, Windows. Without a step in
+the plan: rich clipboard formats, per-file progress.
 
 ### Folder protocol extension
 

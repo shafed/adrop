@@ -1,6 +1,6 @@
 BINARY := adrop
 # The resident daemon runs from its own CGO-free binary so the long-lived
-# service never depends on the X11/GL libraries the GUI links (SPEC_GUI.md §3.1).
+# service never depends on the X11/GL libraries the GUI links.
 DAEMON_BINARY := adrop-daemon
 RELAY_BINARY := adrop-relay
 PREFIX ?= $(HOME)/.local
