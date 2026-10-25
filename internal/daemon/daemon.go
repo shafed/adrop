@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -64,6 +65,17 @@ type Daemon struct {
 	// clipboardGet reads local clipboard for outgoing push; overridable.
 	clipboardGet func(ctx context.Context, mime string) ([]byte, error)
 
+	// tapPair admits tap-pairing connections (Options.TapPair); tapPairs are
+	// the ones waiting for an answer, by PairInfo.ID. Guarded by tapMu.
+	tapPair  bool
+	tapMu    sync.Mutex
+	tapPairs map[string]*pendingPair
+
+	// nearby holds the adrop devices mDNS currently announces, by service
+	// name. Guarded by nearbyMu.
+	nearbyMu sync.Mutex
+	nearby   map[string]ipc.NearbyInfo
+
 	// subscribers receive broadcast receive-events (GUI feed). Guarded by subMu.
 	subMu sync.Mutex
 	subs  map[chan ipc.Event]struct{}
@@ -82,6 +94,10 @@ type Options struct {
 	// Reads from env ADROP_RELAY if empty. Example: "http://relay.example.com:8080"
 	RelayAddr string
 	Logger    *log.Logger
+
+	// TapPair lets the peer listener admit tap-pairing connections (TLS
+	// without pinning, ALPN transport.PairALPN) and PairWith start them.
+	TapPair bool
 
 	// ClipboardSet/Get override the system clipboard (used in tests). When nil
 	// the wl-clipboard-backed defaults are used.
@@ -135,6 +151,9 @@ func New(opt Options) (*Daemon, error) {
 		clipboardSet: opt.ClipboardSet,
 		clipboardGet: opt.ClipboardGet,
 		subs:         make(map[chan ipc.Event]struct{}),
+		tapPair:      opt.TapPair,
+		tapPairs:     make(map[string]*pendingPair),
+		nearby:       make(map[string]ipc.NearbyInfo),
 	}
 	if d.clipboardSet == nil {
 		d.clipboardSet = clipboard.Copy
@@ -167,7 +186,7 @@ func (d *Daemon) runPeerListener(ctx context.Context) error {
 	if err := os.MkdirAll(d.downloadDir, 0o755); err != nil {
 		return fmt.Errorf("create download dir: %w", err)
 	}
-	tlsLn, err := transport.Listen(net.JoinHostPort(d.listenIP, fmt.Sprint(d.port)), d.store.Certificate(), d)
+	tlsLn, err := transport.Listen(net.JoinHostPort(d.listenIP, fmt.Sprint(d.port)), d.store.Certificate(), d, d.allowTapPair)
 	if err != nil {
 		return fmt.Errorf("tls listen: %w", err)
 	}
@@ -184,7 +203,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return fmt.Errorf("create download dir: %w", err)
 	}
 
-	tlsLn, err := transport.Listen(net.JoinHostPort(d.listenIP, fmt.Sprint(d.port)), d.store.Certificate(), d)
+	tlsLn, err := transport.Listen(net.JoinHostPort(d.listenIP, fmt.Sprint(d.port)), d.store.Certificate(), d, d.allowTapPair)
 	if err != nil {
 		return fmt.Errorf("tls listen: %w", err)
 	}
@@ -257,6 +276,9 @@ func (d *Daemon) startMDNS(ctx context.Context) {
 			if fp == selfFP {
 				return
 			}
+			d.nearbyMu.Lock()
+			d.nearby[name] = ipc.NearbyInfo{Name: name, Addr: addr, Fingerprint: fp}
+			d.nearbyMu.Unlock()
 			peerName, trusted := d.store.IsTrusted(fp)
 			if !trusted {
 				return
@@ -264,6 +286,10 @@ func (d *Daemon) startMDNS(ctx context.Context) {
 			if d.store.UpdateAddr(fp, addr) {
 				d.logger.Printf("mDNS: updated addr for %s to %s", peerName, addr)
 			}
+		}, func(name string) {
+			d.nearbyMu.Lock()
+			delete(d.nearby, name)
+			d.nearbyMu.Unlock()
 		})
 		if err != nil {
 			d.logger.Printf("mdns: browse: %v", err)
@@ -395,4 +421,37 @@ func detectLANIP() string {
 		}
 	}
 	return "127.0.0.1"
+}
+
+// Nearby lists the adrop devices mDNS announces on the LAN, paired ones
+// marked, sorted by name.
+func (d *Daemon) Nearby() []ipc.NearbyInfo {
+	d.nearbyMu.Lock()
+	out := make([]ipc.NearbyInfo, 0, len(d.nearby))
+	for _, n := range d.nearby {
+		_, n.Paired = d.store.IsTrusted(n.Fingerprint)
+		out = append(out, n)
+	}
+	d.nearbyMu.Unlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// AddNearby records a device announced on the LAN by a discovery the daemon
+// does not run itself (Android's NsdManager, through the embedded core).
+func (d *Daemon) AddNearby(name, addr, fp string) {
+	if fp == d.store.Fingerprint() {
+		return
+	}
+	d.nearbyMu.Lock()
+	d.nearby[name] = ipc.NearbyInfo{Name: name, Addr: addr, Fingerprint: fp}
+	d.nearbyMu.Unlock()
+	d.store.UpdateAddr(fp, addr)
+}
+
+// RemoveNearby forgets a device whose announcement went away.
+func (d *Daemon) RemoveNearby(name string) {
+	d.nearbyMu.Lock()
+	delete(d.nearby, name)
+	d.nearbyMu.Unlock()
 }

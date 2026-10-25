@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/shafed/adrop/internal/ipc"
 )
@@ -71,7 +72,7 @@ func runStatus(_ []string) error {
 
 func runPair(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: adrop pair show | adrop pair add <uri>")
+		return fmt.Errorf("usage: adrop pair show | add <uri> | with <device> | accept")
 	}
 	switch args[0] {
 	case "show":
@@ -88,6 +89,13 @@ func runPair(args []string) error {
 			return fmt.Errorf("usage: adrop pair add <adrop://pair?d=...>")
 		}
 		return roundtrip(ipc.Request{Cmd: ipc.CmdPairAdd, PairURI: args[1]}, printLines)
+	case "with":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: adrop pair with <nearby name|host:port>")
+		}
+		return runPairWith(args[1])
+	case "accept":
+		return runPairAccept()
 	default:
 		return fmt.Errorf("unknown pair subcommand %q", args[0])
 	}
@@ -255,4 +263,71 @@ func isTerminal(f *os.File) bool {
 		return false
 	}
 	return fi.Mode()&os.ModeCharDevice != 0
+}
+
+// runPairWith starts a tap pairing and asks the user to compare the codes.
+// The answer goes over a second IPC connection while this one waits for the
+// outcome, as the other device answers on its own.
+func runPairWith(target string) error {
+	answered := make(chan error, 1)
+	err := roundtrip(ipc.Request{Cmd: ipc.CmdPairWith, Target: target}, func(r ipc.Response) {
+		if r.Pair == nil {
+			printLines(r)
+			return
+		}
+		go func(p ipc.PairInfo) { answered <- confirmPair(p) }(*r.Pair)
+	})
+	if err != nil {
+		return err
+	}
+	select {
+	case err := <-answered:
+		return err
+	default:
+		return nil
+	}
+}
+
+// runPairAccept waits for a tap pairing started on another device, shows
+// its code and sends the user's answer.
+func runPairAccept() error {
+	fmt.Println("Waiting for a pairing request (tap this device on the other one)…")
+	for {
+		var pending []ipc.PairInfo
+		if err := roundtrip(ipc.Request{Cmd: ipc.CmdPairPending}, func(r ipc.Response) {
+			pending = r.Pending
+		}); err != nil {
+			return err
+		}
+		if len(pending) > 0 {
+			return confirmPair(pending[0])
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+}
+
+func confirmPair(p ipc.PairInfo) error {
+	fmt.Printf("Pairing with %s (%s)\n  code: %s\nDoes the other screen show the same code? [y/N] ", p.Name, p.Fingerprint[:16], p.Code)
+	answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	ok := strings.EqualFold(strings.TrimSpace(answer), "y")
+	return roundtrip(ipc.Request{Cmd: ipc.CmdPairConfirm, ID: p.ID, OK: ok}, printLines)
+}
+
+func runNearby(_ []string) error {
+	return roundtrip(ipc.Request{Cmd: ipc.CmdNearby}, func(r ipc.Response) {
+		if len(r.Nearby) == 0 {
+			fmt.Println("no adrop devices seen on the LAN")
+			return
+		}
+		tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+		fmt.Fprintln(tw, "NAME\tFINGERPRINT\tADDR\tPAIRED")
+		for _, n := range r.Nearby {
+			paired := ""
+			if n.Paired {
+				paired = "yes"
+			}
+			fmt.Fprintf(tw, "%s\t%.16s\t%s\t%s\n", n.Name, n.Fingerprint, n.Addr, paired)
+		}
+		tw.Flush()
+	})
 }

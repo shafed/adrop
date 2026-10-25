@@ -16,6 +16,7 @@ import (
 	"github.com/shafed/adrop/internal/ipc"
 	"github.com/shafed/adrop/internal/notify"
 	"github.com/shafed/adrop/internal/proto"
+	"github.com/shafed/adrop/internal/transport"
 )
 
 // handlePeer services an inbound pinned-TLS connection from a trusted peer
@@ -35,6 +36,10 @@ func (d *Daemon) handlePeer(ctx context.Context, raw net.Conn) {
 	fp, err := peerFP(conn)
 	if err != nil {
 		d.logger.Printf("peer fingerprint: %v", err)
+		return
+	}
+	if conn.ConnectionState().NegotiatedProtocol == transport.PairALPN {
+		d.handleTapPair(ctx, conn, fp)
 		return
 	}
 

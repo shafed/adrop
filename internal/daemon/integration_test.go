@@ -37,6 +37,13 @@ func freePort(t *testing.T) int {
 
 func newTestDaemon(t *testing.T, ctx context.Context, name string) *testDaemon {
 	t.Helper()
+	return newTestDaemonWith(t, ctx, name, func(*Options) {})
+}
+
+// newTestDaemonWith is newTestDaemon with a hook to adjust Options before
+// the daemon is built.
+func newTestDaemonWith(t *testing.T, ctx context.Context, name string, adjust func(*Options)) *testDaemon {
+	t.Helper()
 	cfgDir := t.TempDir()
 	dlDir := t.TempDir()
 	store, err := config.Open(cfgDir)
@@ -45,7 +52,7 @@ func newTestDaemon(t *testing.T, ctx context.Context, name string) *testDaemon {
 	}
 	td := &testDaemon{store: store, download: dlDir}
 	port := freePort(t)
-	d, err := New(Options{
+	opt := Options{
 		Store:       store,
 		Name:        name,
 		Port:        port,
@@ -64,7 +71,9 @@ func newTestDaemon(t *testing.T, ctx context.Context, name string) *testDaemon {
 			defer td.clipMu.Unlock()
 			return append([]byte(nil), td.clip...), nil
 		},
-	})
+	}
+	adjust(&opt)
+	d, err := New(opt)
 	if err != nil {
 		t.Fatalf("new daemon: %v", err)
 	}

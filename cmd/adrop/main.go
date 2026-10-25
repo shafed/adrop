@@ -5,6 +5,9 @@
 //	adrop status                      show daemon status
 //	adrop pair show                   display this device's pairing QR
 //	adrop pair add <uri>              trust a scanned pairing URI
+//	adrop pair with <device>          pair with a nearby device by code
+//	adrop pair accept                 answer a pairing started on another device
+//	adrop nearby                      list adrop devices seen on the LAN
 //	adrop devices                     list trusted devices
 //	adrop revoke <name|fp>            remove a trusted device
 //	adrop send [<peer>] <files...>    send files (peer optional, uses last-used)
@@ -51,6 +54,8 @@ func main() {
 		err = runPair(args)
 	case "devices":
 		err = runDevices(args)
+	case "nearby":
+		err = runNearby(args)
 	case "revoke":
 		err = runRevoke(args)
 	case "send":
@@ -85,6 +90,9 @@ Usage:
   adrop status                  show daemon status & this device's identity
   adrop pair show               display this device's pairing QR (waits to pair)
   adrop pair add <uri>          trust a scanned "adrop://pair?d=..." URI
+  adrop pair with <device>      pair with a nearby device by comparing a code
+  adrop pair accept             answer a pairing started on another device
+  adrop nearby                  list adrop devices seen on the LAN
   adrop devices                 list trusted devices
   adrop revoke <name|fp-prefix> revoke (untrust) a device
   adrop send [<peer>] <file...>  send files to a peer (peer optional after first send)
@@ -97,5 +105,6 @@ Environment:
   ADROP_NAME         this device's advertised name (daemon, default hostname)
   ADROP_ADVERTISE_IP LAN IP to put in the pairing QR (daemon, auto-detected)
   ADROP_DOWNLOAD_DIR where received files land (daemon, default ~/Downloads)
+  ADROP_TAP_PAIR     1 = accept pairing by code from nearby devices (daemon, default off)
 `)
 }

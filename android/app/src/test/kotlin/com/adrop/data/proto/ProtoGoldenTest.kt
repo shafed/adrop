@@ -134,6 +134,8 @@ class ProtoGoldenTest {
             MsgType.CLIPBOARD     to "clipboard",
             MsgType.SESSION_END   to "session_end",
             MsgType.ACK           to "ack",
+            MsgType.PAIR_REQUEST  to "pair_request",
+            MsgType.PAIR_CONFIRM  to "pair_confirm",
         )
         for ((constant, wire) in expected) {
             assertEquals("MsgType constant '$constant'", wire, constant)

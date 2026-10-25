@@ -32,6 +32,7 @@ func runDaemon(args []string) error {
 		DownloadDir: os.Getenv("ADROP_DOWNLOAD_DIR"),
 		RelayAddr:   os.Getenv("ADROP_RELAY"),
 		Logger:      log.New(os.Stderr, "adrop: ", log.LstdFlags),
+		TapPair:     os.Getenv("ADROP_TAP_PAIR") == "1",
 	})
 	if err != nil {
 		return err

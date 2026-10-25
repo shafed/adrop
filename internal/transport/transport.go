@@ -7,11 +7,14 @@
 package transport
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
 	"net"
+	"slices"
+	"strings"
 
 	"github.com/shafed/adrop/internal/config"
 )
@@ -55,10 +58,60 @@ func pinnedTLSConfig(cert tls.Certificate, verify PeerVerifier, server, allowAny
 	return cfg
 }
 
-// Listen returns a TLS listener on addr that enforces peer pinning.
-func Listen(addr string, cert tls.Certificate, verify PeerVerifier) (net.Listener, error) {
+// PairALPN is the ALPN protocol of a tap-pairing connection: TLS without
+// pinning, on the same port as pinned sessions. A client that offers it gets
+// an unpinned handshake only while allowPair reports true; everyone else,
+// old peers included, goes through the pinned config as before.
+const PairALPN = "adrop-pair/1"
+
+// Listen returns a TLS listener on addr that enforces peer pinning. When
+// allowPair is non-nil and returns true, a client offering PairALPN is
+// admitted without pinning; the caller tells such connections apart by
+// ConnectionState().NegotiatedProtocol and must not run a session on them.
+func Listen(addr string, cert tls.Certificate, verify PeerVerifier, allowPair func() bool) (net.Listener, error) {
 	cfg := pinnedTLSConfig(cert, verify, true, false)
+	if allowPair != nil {
+		pairCfg := pinnedTLSConfig(cert, verify, true, true)
+		pairCfg.NextProtos = []string{PairALPN}
+		cfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+			if slices.Contains(hello.SupportedProtos, PairALPN) && allowPair() {
+				return pairCfg, nil
+			}
+			return nil, nil
+		}
+	}
 	return tls.Listen("tcp", addr, cfg)
+}
+
+// ErrNoTapPairing is returned by DialPair when the peer did not take the
+// tap-pairing protocol: an old version, or tap pairing is off there.
+var ErrNoTapPairing = errors.New("transport: peer does not accept tap pairing")
+
+// DialPair opens a tap-pairing connection to addr: both sides present their
+// certificates, neither is checked. It returns the peer's fingerprint, which
+// the users then compare through pairing.Code.
+func DialPair(ctx context.Context, addr string, cert tls.Certificate) (*tls.Conn, string, error) {
+	cfg := pinnedTLSConfig(cert, nil, false, true)
+	cfg.NextProtos = []string{PairALPN}
+	d := tls.Dialer{Config: cfg}
+	raw, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		if strings.Contains(err.Error(), "bad certificate") {
+			return nil, "", ErrNoTapPairing
+		}
+		return nil, "", err
+	}
+	conn := raw.(*tls.Conn)
+	if conn.ConnectionState().NegotiatedProtocol != PairALPN {
+		conn.Close()
+		return nil, "", ErrNoTapPairing
+	}
+	fp, err := PeerFingerprint(conn)
+	if err != nil {
+		conn.Close()
+		return nil, "", err
+	}
+	return conn, fp, nil
 }
 
 // Dial connects to addr, enforcing peer pinning, and returns the established

@@ -69,6 +69,12 @@ object MsgType {
 
     /** Receiver's reply to RESUME_QUERY: bytes_done=N means N bytes already received. */
     const val RESUME_OFFER  = "resume_offer"
+
+    /** Tap pairing (ALPN adrop-pair/1) only: name and addr of the device. */
+    const val PAIR_REQUEST  = "pair_request"
+
+    /** Tap pairing only: ok is the user's answer after comparing the codes. */
+    const val PAIR_CONFIRM  = "pair_confirm"
 }
 
 object SessionKind {

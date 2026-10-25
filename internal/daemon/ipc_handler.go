@@ -141,6 +141,40 @@ func (d *Daemon) handleIPC(ctx context.Context, conn net.Conn) {
 		}
 		send(ipc.Response{Line: "clipboard sent", Done: true})
 
+	case ipc.CmdNearby:
+		send(ipc.Response{Nearby: d.Nearby(), Done: true})
+
+	case ipc.CmdPairWith:
+		addr := req.Target
+		for _, n := range d.Nearby() {
+			if n.Name == req.Target {
+				addr = n.Addr
+			}
+		}
+		ctx, cancel := cancelOnDisconnect(ctx, conn)
+		defer cancel()
+		dev, err := d.PairWith(ctx, addr, func(p ipc.PairInfo) {
+			send(ipc.Response{Pair: &p, Line: "code " + p.Code + " (" + p.Name + ")"})
+		})
+		if err != nil {
+			send(ipc.Response{Err: err.Error(), Done: true})
+			return
+		}
+		send(ipc.Response{Line: "paired with " + dev.Name + " (" + dev.Fingerprint[:16] + ")", Done: true})
+
+	case ipc.CmdPairPending:
+		send(ipc.Response{Pending: d.PendingPairs(), Done: true})
+
+	case ipc.CmdPairConfirm:
+		ctx, cancel := cancelOnDisconnect(ctx, conn)
+		defer cancel()
+		p, err := d.ConfirmPair(ctx, req.ID, req.OK)
+		if err != nil {
+			send(ipc.Response{Err: err.Error(), Done: true})
+			return
+		}
+		send(ipc.Response{Line: "paired with " + p.Name + " (" + p.Fingerprint[:16] + ")", Done: true})
+
 	case ipc.CmdSubscribe:
 		d.streamEvents(ctx, conn, send)
 

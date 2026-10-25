@@ -54,10 +54,11 @@ func Advertise(ctx context.Context, name string, port int, fingerprint string) e
 }
 
 // Browse runs avahi-browse -rp _adrop._tcp and calls onRecord for each
-// resolved peer record with (name, "addr:port", fingerprint-from-TXT).
+// resolved peer record with (name, "addr:port", fingerprint-from-TXT), and
+// onRemove (if non-nil) with the name of each service that went away.
 // It blocks until ctx is cancelled. If avahi-browse is not installed it logs a
 // warning and returns nil.
-func Browse(ctx context.Context, onRecord func(name, addr, fp string)) error {
+func Browse(ctx context.Context, onRecord func(name, addr, fp string), onRemove func(name string)) error {
 	if _, err := exec.LookPath("avahi-browse"); err != nil {
 		log.Printf("mdns: avahi-browse not found, skipping discovery (%v)", err)
 		return nil
@@ -65,7 +66,7 @@ func Browse(ctx context.Context, onRecord func(name, addr, fp string)) error {
 	for {
 		// Without -t avahi-browse keeps running and reports changes, so any
 		// exit is unexpected; back off rather than respawn in a tight loop.
-		err := runBrowse(ctx, "-rp", onRecord)
+		err := runBrowse(ctx, "-rp", onRecord, onRemove)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -88,10 +89,10 @@ func ResolveOnce(ctx context.Context, onRecord func(name, addr, fp string)) erro
 	if _, err := exec.LookPath("avahi-browse"); err != nil {
 		return nil
 	}
-	return runBrowse(ctx, "-rtp", onRecord)
+	return runBrowse(ctx, "-rtp", onRecord, nil)
 }
 
-func runBrowse(ctx context.Context, flags string, onRecord func(name, addr, fp string)) error {
+func runBrowse(ctx context.Context, flags string, onRecord func(name, addr, fp string), onRemove func(name string)) error {
 	cmd := exec.CommandContext(ctx, "avahi-browse", flags, "_adrop._tcp")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -105,6 +106,8 @@ func runBrowse(ctx context.Context, flags string, onRecord func(name, addr, fp s
 		line := scanner.Text()
 		if name, addr, fp, ok := parseBrowseLine(line); ok {
 			onRecord(name, addr, fp)
+		} else if name, ok := parseRemoveLine(line); ok && onRemove != nil {
+			onRemove(name)
 		}
 	}
 	return cmd.Wait()
@@ -144,6 +147,17 @@ func parseBrowseLine(line string) (name, addr, fp string, ok bool) {
 	}
 
 	return recName, fmt.Sprintf("%s:%d", address, port), fp, true
+}
+
+// parseRemoveLine parses a removal from avahi-browse -p output:
+//
+//	-;eth0;IPv4;name;_adrop._tcp;local
+func parseRemoveLine(line string) (name string, ok bool) {
+	fields := strings.Split(line, ";")
+	if len(fields) < 6 || fields[0] != "-" || fields[3] == "" {
+		return "", false
+	}
+	return fields[3], true
 }
 
 // extractFP finds "fp=<value>" in a TXT record string.

@@ -36,19 +36,25 @@ const (
 	CmdSendFiles Command = "send-files"     // send files to a peer
 	CmdSendClip  Command = "send-clipboard" // push local clipboard to a peer
 	CmdSubscribe Command = "subscribe"      // long-lived: stream receive events
+
+	CmdNearby      Command = "nearby"       // adrop devices seen on the LAN
+	CmdPairWith    Command = "pair-with"    // tap pairing: connect and show the code
+	CmdPairPending Command = "pair-pending" // tap pairings waiting for an answer
+	CmdPairConfirm Command = "pair-confirm" // answer a tap pairing; waits for its outcome
 )
 
 // Event is a daemon->GUI push on a CmdSubscribe stream. Each Response on that
 // stream carries exactly one Event in Response.Event.
 type Event struct {
-	Kind      string `json:"kind"`  // "recv-start" | "recv-progress" | "recv-file-done" | "recv-done" | "recv-error"
-	Peer      string `json:"peer"`  // sending peer's name
-	File      string `json:"file"`  // basename of the current file (if any)
-	Index     int    `json:"index"` // 0-based file index within the session
-	Count     int    `json:"count"` // total files in the session (if known)
-	BytesDone int64  `json:"bytes_done"`
-	Total     int64  `json:"total"` // total bytes for the current file (if known)
-	Err       string `json:"err,omitempty"`
+	Kind      string    `json:"kind"`  // "recv-start" | "recv-progress" | "recv-file-done" | "recv-done" | "recv-error" | "pair-request" | "pair-done" | "pair-error"
+	Peer      string    `json:"peer"`  // sending peer's name
+	File      string    `json:"file"`  // basename of the current file (if any)
+	Index     int       `json:"index"` // 0-based file index within the session
+	Count     int       `json:"count"` // total files in the session (if known)
+	BytesDone int64     `json:"bytes_done"`
+	Total     int64     `json:"total"` // total bytes for the current file (if known)
+	Err       string    `json:"err,omitempty"`
+	Pair      *PairInfo `json:"pair,omitempty"` // pair-* events
 }
 
 // Request is a single CLI->daemon command.
@@ -74,6 +80,10 @@ type Request struct {
 	// When set to e.g. "image/png" and Text is empty, the daemon reads the
 	// clipboard via wl-paste --type image/png instead of plain text.
 	MIME string `json:"mime,omitempty"`
+
+	// PairConfirm: which tap pairing (PairInfo.ID) and the user's answer.
+	ID string `json:"id,omitempty"`
+	OK bool   `json:"ok,omitempty"`
 }
 
 // Response is one daemon->CLI message. Multiple may stream for one Request.
@@ -92,6 +102,15 @@ type Response struct {
 
 	// Event is populated on a CmdSubscribe stream (one per Response).
 	Event *Event `json:"event,omitempty"`
+
+	// Pair is a tap pairing waiting for the user's answer (pair-with).
+	Pair *PairInfo `json:"pair,omitempty"`
+
+	// Pending lists tap pairings waiting for an answer (pair-pending).
+	Pending []PairInfo `json:"pending,omitempty"`
+
+	// Nearby lists adrop devices seen on the LAN (nearby).
+	Nearby []NearbyInfo `json:"nearby,omitempty"`
 
 	// Done marks the final response for a request.
 	Done bool `json:"done,omitempty"`
@@ -115,4 +134,20 @@ type StatusInfo struct {
 	ListenAddr  string `json:"listen_addr"`
 	NumDevices  int    `json:"num_devices"`
 	LastPeer    string `json:"last_peer,omitempty"` // name of last-used send target
+}
+
+// PairInfo is one tap pairing: the code both screens show and who is asking.
+type PairInfo struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Fingerprint string `json:"fingerprint"`
+	Code        string `json:"code"`
+}
+
+// NearbyInfo is an adrop device announced on the LAN over mDNS.
+type NearbyInfo struct {
+	Name        string `json:"name"`
+	Addr        string `json:"addr"`
+	Fingerprint string `json:"fingerprint"`
+	Paired      bool   `json:"paired"`
 }

@@ -69,6 +69,13 @@ const (
 	// BytesDone reports how many bytes of the partial file already exist
 	// (0 if none). The sender seeks to that offset before streaming chunks.
 	TypeResumeOffer Type = "resume_offer"
+
+	// TypePairRequest and TypePairConfirm run only on a tap-pairing
+	// connection (ALPN transport.PairALPN), never on a pinned session. Both
+	// sides send a PairRequest carrying Name and Addr, show the code from
+	// pairing.Code, then send a PairConfirm whose OK is the user's answer.
+	TypePairRequest Type = "pair_request"
+	TypePairConfirm Type = "pair_confirm"
 )
 
 // SessionKind distinguishes a file-transfer session from a clipboard push.

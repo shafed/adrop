@@ -62,3 +62,18 @@ func TestParseBrowseLineMissingFP(t *testing.T) {
 		t.Error("expected ok=false when TXT has no fp= entry")
 	}
 }
+
+func TestParseRemoveLine(t *testing.T) {
+	if name, ok := parseRemoveLine("-;wlan0;IPv4;pixel;_adrop._tcp;local"); !ok || name != "pixel" {
+		t.Fatalf("removal not parsed: %q %v", name, ok)
+	}
+	for _, line := range []string{
+		"+;wlan0;IPv4;pixel;_adrop._tcp;local",
+		"=;wlan0;IPv4;pixel;_adrop._tcp;local;h.local;10.0.0.2;53127;\"fp=ab\"",
+		"-;wlan0;IPv4;",
+	} {
+		if _, ok := parseRemoveLine(line); ok {
+			t.Fatalf("%q parsed as a removal", line)
+		}
+	}
+}

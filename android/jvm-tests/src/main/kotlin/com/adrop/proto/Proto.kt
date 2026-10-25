@@ -50,6 +50,12 @@ object MsgType {
     const val CLIPBOARD     = "clipboard"
     const val SESSION_END   = "session_end"
     const val ACK           = "ack"
+
+    /** Tap pairing (ALPN adrop-pair/1) only: name and addr of the device. */
+    const val PAIR_REQUEST  = "pair_request"
+
+    /** Tap pairing only: ok is the user's answer after comparing the codes. */
+    const val PAIR_CONFIRM  = "pair_confirm"
 }
 
 object SessionKind {
