@@ -1,13 +1,13 @@
 {
   "$comment": "Состояние текущей работы по PLAN.md. Правится на границе этапа, не на каждом коммите. Результат ворот — заметки refs/notes/gate (пишет scripts/verify.sh).",
   "updated": "2026-10-25",
-  "stage": "Шаг 1 PLAN.md: прототип Go-ядра внутри Flutter",
-  "stage_status": "verified_on_devices",
+  "stage": "Шаги 2–3 PLAN.md сделаны в Go (выключены по умолчанию); дальше шаги 4–6",
+  "stage_status": "code_done_device_checks_pending",
   "verification_command": "bash scripts/verify.sh",
   "verification_notes": [
     "Ворота: go vet, gofmt, vet с тегом gui, сборка без cgo, go test -race. Android не входит; --android добавляет testDebugUnitTest (нужны JAVA_HOME и ANDROID_HOME).",
     "Заметка ворот пишется только на чистом дереве и не в CI."
   ],
-  "next_action": "Шаг 1 проверен на телефоне и в Linux (см. STATUS.md). Открыто: Go-горутины в фоне на Android. Решение владельца: остаёмся на Flutter и начинаем шаг 2.",
+  "next_action": "Шаги 4–6: foreground-сервис, Flutter UI на Linux и Android вместо Fyne и Kotlin, Windows. Проверки шагов 2–3 на устройствах — за владельцем (см. «Не проверено вживую» в STATUS.md).",
   "blockers": []
 }
