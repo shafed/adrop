@@ -1,6 +1,8 @@
 # adrop
 
-AirDrop-like file & clipboard transfer over a key-pinned TLS LAN connection.
+Moves files and clipboard text between your own devices over a key-pinned TLS
+connection.
+
 This repository implements the **PC side** (Arch Linux) from
 [`SPEC.md`](SPEC.md): a single Go binary that is the **desktop app**, the
 resident **daemon** and a thin **CLI**. Running `adrop` with no arguments opens

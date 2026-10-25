@@ -77,7 +77,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `adrop — AirDrop-like file & clipboard transfer over pinned-TLS LAN
+	fmt.Fprint(os.Stderr, `adrop — files and clipboard between your own devices over pinned TLS
 
 Usage:
 `)
