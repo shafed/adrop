@@ -53,6 +53,7 @@ func (d *Daemon) handlePeer(ctx context.Context, raw net.Conn) {
 		Type:        proto.TypeHello,
 		Folders:     true,
 		Version:     proto.ProtocolVersion,
+		RNS:         d.rnsKey(),
 		Fingerprint: d.store.Fingerprint(),
 		Name:        d.name,
 		Addr:        d.advertiseAddr(),
@@ -63,6 +64,7 @@ func (d *Daemon) handlePeer(ctx context.Context, raw net.Conn) {
 
 	// If a pairing window is open and this is the expected peer, finalize it.
 	if d.tryCompletePairing(fp, hello.Name, hello.Addr, conn.RemoteAddr()) {
+		d.store.UpdateRNS(fp, hello.RNS)
 		d.logger.Printf("paired with %s (%s)", hello.Name, fp[:16])
 		return
 	}
@@ -80,6 +82,7 @@ func (d *Daemon) handlePeer(ctx context.Context, raw net.Conn) {
 	d.store.UpdateAddr(fp, d.resolvePeerAddr(hello.Addr, conn.RemoteAddr()))
 	// Persist the peer's FCM token so we can wake it later if direct dial fails.
 	d.store.UpdateFcmToken(fp, hello.FcmToken)
+	d.store.UpdateRNS(fp, hello.RNS)
 
 	if err := d.receiveSession(ctx, conn, peerName); err != nil {
 		d.logger.Printf("receive from %s: %v", peerName, err)

@@ -34,12 +34,15 @@ func (d *Daemon) handleIPC(ctx context.Context, conn net.Conn) {
 				lastPeerName = dev.Name
 			}
 		}
+		rnsAddr, rnsHubs := d.RNSStatus()
 		send(ipc.Response{Status: &ipc.StatusInfo{
 			Name:        d.name,
 			Fingerprint: d.store.Fingerprint(),
 			ListenAddr:  d.advertiseAddr(),
 			NumDevices:  len(d.store.Devices()),
 			LastPeer:    lastPeerName,
+			RNSAddr:     rnsAddr,
+			RNSHubs:     rnsHubs,
 		}, Done: true})
 
 	case ipc.CmdPairShow:
@@ -174,6 +177,18 @@ func (d *Daemon) handleIPC(ctx context.Context, conn net.Conn) {
 			return
 		}
 		send(ipc.Response{Line: "paired with " + p.Name + " (" + p.Fingerprint[:16] + ")", Done: true})
+
+	case ipc.CmdPing:
+		ctx, cancel := cancelOnDisconnect(ctx, conn)
+		defer cancel()
+		ctx, cancelT := context.WithTimeout(ctx, 60*time.Second)
+		defer cancelT()
+		rtt, err := d.Ping(ctx, req.Target)
+		if err != nil {
+			send(ipc.Response{Err: err.Error(), Done: true})
+			return
+		}
+		send(ipc.Response{Line: "pong from " + req.Target + " over reticulum in " + rtt.Round(time.Millisecond).String(), Done: true})
 
 	case ipc.CmdSubscribe:
 		d.streamEvents(ctx, conn, send)

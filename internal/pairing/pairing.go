@@ -25,7 +25,13 @@ import (
 // URIScheme prefixes the QR payload.
 const URIScheme = "adrop://pair?d="
 
-const compactPayloadVersion = 2
+const (
+	compactPayloadVersion = 2
+	// compactRNSVersion appends the 64-byte Reticulum public key after the
+	// certificate. Version-2 decoders refuse it as an unknown version.
+	compactRNSVersion = 3
+	rnsKeyLen         = 64
+)
 
 // Payload is the data carried in a pairing QR code.
 type Payload struct {
@@ -34,6 +40,9 @@ type Payload struct {
 	Fingerprint string `json:"fp"`   // SHA-256 of cert DER (the pin)
 	CertPEM     string `json:"cert"` // full PEM cert, so scanner can verify fp
 	Addr        string `json:"addr"` // host:port to dial back
+	// RNS is the device's Reticulum public key (64 bytes, hex), how paired
+	// devices reach it outside the LAN. Present from compact version 3 on.
+	RNS string `json:"rns,omitempty"`
 }
 
 // Encode builds the "adrop://pair?d=..." URI for a payload. Version 2 uses a
@@ -43,7 +52,16 @@ func Encode(p Payload) (string, error) {
 	if p.Version == 0 {
 		p.Version = compactPayloadVersion
 	}
-	if p.Version != compactPayloadVersion {
+	var rnsKey []byte
+	if p.RNS != "" {
+		k, err := hex.DecodeString(p.RNS)
+		if err != nil || len(k) != rnsKeyLen {
+			return "", fmt.Errorf("pairing: rns key must be %d bytes of hex", rnsKeyLen)
+		}
+		rnsKey = k
+		p.Version = compactRNSVersion
+	}
+	if p.Version != compactPayloadVersion && p.Version != compactRNSVersion {
 		return "", fmt.Errorf("pairing: unsupported encode version %d", p.Version)
 	}
 	der, err := config.CertDERFromPEM([]byte(p.CertPEM))
@@ -67,7 +85,7 @@ func Encode(p Payload) (string, error) {
 	}
 
 	raw := make([]byte, 0, 1+1+len(name)+1+len(addr)+32+2+len(der))
-	raw = append(raw, compactPayloadVersion)
+	raw = append(raw, byte(p.Version))
 	raw = append(raw, byte(len(name)))
 	raw = append(raw, name...)
 	raw = append(raw, byte(len(addr)))
@@ -75,6 +93,7 @@ func Encode(p Payload) (string, error) {
 	raw = append(raw, fp...)
 	raw = binary.BigEndian.AppendUint16(raw, uint16(len(der)))
 	raw = append(raw, der...)
+	raw = append(raw, rnsKey...)
 	return URIScheme + base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
@@ -108,8 +127,17 @@ func Decode(uri string) (Payload, error) {
 }
 
 func decodeCompact(raw []byte) (Payload, error) {
-	if len(raw) < 1 || raw[0] != compactPayloadVersion {
+	if len(raw) < 1 || (raw[0] != compactPayloadVersion && raw[0] != compactRNSVersion) {
 		return Payload{}, fmt.Errorf("pairing: unsupported compact payload version")
+	}
+	version := int(raw[0])
+	var rnsKey []byte
+	if version == compactRNSVersion {
+		if len(raw) < 1+rnsKeyLen {
+			return Payload{}, fmt.Errorf("pairing: compact payload missing rns key")
+		}
+		rnsKey = raw[len(raw)-rnsKeyLen:]
+		raw = raw[:len(raw)-rnsKeyLen]
 	}
 	i := 1
 	readString := func(label string) (string, error) {
@@ -152,11 +180,12 @@ func decodeCompact(raw []byte) (Payload, error) {
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	return Payload{
-		Version:     compactPayloadVersion,
+		Version:     version,
 		Name:        name,
 		Fingerprint: fp,
 		CertPEM:     string(certPEM),
 		Addr:        addr,
+		RNS:         hex.EncodeToString(rnsKey),
 	}, nil
 }
 

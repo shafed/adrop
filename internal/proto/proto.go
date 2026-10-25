@@ -113,6 +113,9 @@ type Header struct {
 	// sending device. Android sends this in Hello so the PC can wake it via
 	// FCM when a subsequent direct dial fails. Old peers ignore unknown fields.
 	FcmToken string `json:"fcm_token,omitempty"`
+	// RNS is the sender's Reticulum public key (hex) in Hello and
+	// PairRequest: how paired devices reach it outside the LAN.
+	RNS string `json:"rns,omitempty"`
 
 	// SessionStart
 	Kind  SessionKind `json:"kind,omitempty"`

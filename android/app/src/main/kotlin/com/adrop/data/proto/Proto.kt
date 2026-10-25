@@ -106,6 +106,7 @@ data class Header(
     @SerialName("fingerprint") val fingerprint: String?         = null,
     @SerialName("name")        val name:        String?         = null,
     @SerialName("addr")        val addr:        String?         = null,
+    @SerialName("rns")         val rns:         String?         = null,
     // FCM registration token sent in Hello so the PC can wake us via relay.
     @SerialName("fcm_token")   val fcmToken:    String?         = null,
     @SerialName("kind")        val kind:        String?         = null,

@@ -63,6 +63,10 @@ func runStatus(_ []string) error {
 			if s.LastPeer != "" {
 				fmt.Printf("last peer:   %s\n", s.LastPeer)
 			}
+			if s.RNSAddr != "" {
+				fmt.Printf("reticulum:   %s\n", s.RNSAddr)
+				fmt.Printf("hubs:        %s\n", strings.Join(s.RNSHubs, ", "))
+			}
 		}
 		if r.Line != "" {
 			fmt.Println(r.Line)
@@ -330,4 +334,11 @@ func runNearby(_ []string) error {
 		}
 		tw.Flush()
 	})
+}
+
+func runPing(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: adrop ping <peer>")
+	}
+	return roundtrip(ipc.Request{Cmd: ipc.CmdPing, Target: args[0]}, printLines)
 }

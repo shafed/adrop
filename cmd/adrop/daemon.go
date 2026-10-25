@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/shafed/adrop/internal/config"
@@ -33,6 +34,8 @@ func runDaemon(args []string) error {
 		RelayAddr:   os.Getenv("ADROP_RELAY"),
 		Logger:      log.New(os.Stderr, "adrop: ", log.LstdFlags),
 		TapPair:     os.Getenv("ADROP_TAP_PAIR") == "1",
+		Reticulum:   os.Getenv("ADROP_RNS") == "1",
+		RNSHubs:     splitList(os.Getenv("ADROP_RNS_HUBS")),
 	})
 	if err != nil {
 		return err
@@ -45,4 +48,14 @@ func runDaemon(args []string) error {
 		return err
 	}
 	return nil
+}
+
+func splitList(s string) []string {
+	var out []string
+	for _, f := range strings.Split(s, ",") {
+		if f = strings.TrimSpace(f); f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
 }

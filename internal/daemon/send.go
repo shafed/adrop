@@ -151,6 +151,7 @@ func (d *Daemon) dialPeer(ctx context.Context, target string, folders ...bool) (
 	if err := proto.WriteControl(conn, proto.Header{
 		Type:        proto.TypeHello,
 		Version:     proto.ProtocolVersion,
+		RNS:         d.rnsKey(),
 		Fingerprint: d.store.Fingerprint(),
 		Name:        d.name,
 		Addr:        d.advertiseAddr(),
@@ -168,6 +169,7 @@ func (d *Daemon) dialPeer(ctx context.Context, target string, folders ...bool) (
 		return nil, dev, fmt.Errorf("peer does not support folder transfers; update the receiving app")
 	}
 	d.store.UpdateFcmToken(fp, theirHello.FcmToken)
+	d.store.UpdateRNS(fp, theirHello.RNS)
 	return conn, dev, nil
 }
 

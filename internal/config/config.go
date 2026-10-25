@@ -44,6 +44,9 @@ type Device struct {
 	// Hello with a non-empty FcmToken field. Used to wake the phone when a
 	// direct dial fails (e.g. phone is on a different network).
 	FcmToken string `json:"fcm_token,omitempty"`
+	// RNS is the device's Reticulum public key (hex), learned at pairing or
+	// from its Hello: how it is reached outside the LAN.
+	RNS string `json:"rns,omitempty"`
 }
 
 // Store holds this device's identity plus the trusted-device list and
@@ -316,6 +319,27 @@ func (s *Store) UpdateFcmToken(fingerprint, token string) {
 		}
 	}
 }
+
+// UpdateRNS records a device's Reticulum public key, if it is paired.
+func (s *Store) UpdateRNS(fingerprint, rns string) {
+	if rns == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.devices {
+		if s.devices[i].Fingerprint == fingerprint {
+			if s.devices[i].RNS != rns {
+				s.devices[i].RNS = rns
+				_ = s.saveDevicesLocked()
+			}
+			return
+		}
+	}
+}
+
+// Path returns a file path inside the config directory.
+func (s *Store) Path(name string) string { return filepath.Join(s.dir, name) }
 
 // RemoveDevice revokes a trusted device by name or fingerprint prefix.
 // Returns the number of devices removed.

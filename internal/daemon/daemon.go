@@ -76,6 +76,8 @@ type Daemon struct {
 	nearbyMu sync.Mutex
 	nearby   map[string]ipc.NearbyInfo
 
+	rnsFields
+
 	// subscribers receive broadcast receive-events (GUI feed). Guarded by subMu.
 	subMu sync.Mutex
 	subs  map[chan ipc.Event]struct{}
@@ -98,6 +100,12 @@ type Options struct {
 	// TapPair lets the peer listener admit tap-pairing connections (TLS
 	// without pinning, ALPN transport.PairALPN) and PairWith start them.
 	TapPair bool
+
+	// Reticulum connects the daemon to public Reticulum hubs so paired
+	// devices reach it outside the LAN; RNSHubs replaces the built-in hub
+	// list and the catalog (tests, a private hub).
+	Reticulum bool
+	RNSHubs   []string
 
 	// ClipboardSet/Get override the system clipboard (used in tests). When nil
 	// the wl-clipboard-backed defaults are used.
@@ -155,6 +163,8 @@ func New(opt Options) (*Daemon, error) {
 		tapPairs:     make(map[string]*pendingPair),
 		nearby:       make(map[string]ipc.NearbyInfo),
 	}
+	d.rnsEnabled, d.rnsHubs = opt.Reticulum, opt.RNSHubs
+	d.pongs = make(map[string]chan struct{})
 	if d.clipboardSet == nil {
 		d.clipboardSet = clipboard.Copy
 	}
@@ -226,6 +236,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.logger.Printf("listening for peers on %s, IPC at %s", d.tcpAddr, sockPath)
 
 	d.startMDNS(ctx)
+	if d.rnsEnabled {
+		d.startRNS(ctx)
+	}
 
 	var wg sync.WaitGroup
 	wg.Add(2)

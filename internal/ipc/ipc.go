@@ -41,6 +41,7 @@ const (
 	CmdPairWith    Command = "pair-with"    // tap pairing: connect and show the code
 	CmdPairPending Command = "pair-pending" // tap pairings waiting for an answer
 	CmdPairConfirm Command = "pair-confirm" // answer a tap pairing; waits for its outcome
+	CmdPing        Command = "ping"         // signed ping to a paired device over Reticulum
 )
 
 // Event is a daemon->GUI push on a CmdSubscribe stream. Each Response on that
@@ -129,11 +130,13 @@ type DeviceInfo struct {
 
 // StatusInfo summarizes the running daemon.
 type StatusInfo struct {
-	Name        string `json:"name"`
-	Fingerprint string `json:"fingerprint"`
-	ListenAddr  string `json:"listen_addr"`
-	NumDevices  int    `json:"num_devices"`
-	LastPeer    string `json:"last_peer,omitempty"` // name of last-used send target
+	Name        string   `json:"name"`
+	Fingerprint string   `json:"fingerprint"`
+	ListenAddr  string   `json:"listen_addr"`
+	NumDevices  int      `json:"num_devices"`
+	LastPeer    string   `json:"last_peer,omitempty"` // name of last-used send target
+	RNSAddr     string   `json:"rns_addr,omitempty"`  // Reticulum address, when it is on
+	RNSHubs     []string `json:"rns_hubs,omitempty"`  // hubs that pass the measurement
 }
 
 // PairInfo is one tap pairing: the code both screens show and who is asking.

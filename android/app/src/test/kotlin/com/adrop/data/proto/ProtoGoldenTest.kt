@@ -433,4 +433,15 @@ class ProtoGoldenTest {
         // We must NOT send ok=false explicitly (it should be absent).
         assertFalse(json.contains(""""ok":false"""))
     }
+
+    @Test
+    fun `golden - hello carries the reticulum key as rns`() {
+        val out = ByteArrayOutputStream()
+        writeControl(out, Header(type = MsgType.HELLO, rns = "ab"))
+        val json = frameJson(out.toByteArray())
+
+        assertTrue("""key must be "rns"""", json.contains(""""rns":"ab""""))
+        val back = protoJson.decodeFromString(Header.serializer(), """{"type":"hello","rns":"cd"}""")
+        assertEquals("cd", back.rns)
+    }
 }

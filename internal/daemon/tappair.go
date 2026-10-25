@@ -35,6 +35,7 @@ var (
 // pendingPair is one tap pairing between the code exchange and the outcome.
 type pendingPair struct {
 	info   ipc.PairInfo
+	rns    string        // the peer's Reticulum key from its PairRequest
 	decide chan bool     // the local user's answer; buffered, first wins
 	done   chan struct{} // closed once err is set
 	err    error         // nil when the device was saved
@@ -130,6 +131,7 @@ func (d *Daemon) sendPairRequest(conn net.Conn) error {
 	return proto.WriteControl(conn, proto.Header{
 		Type:    proto.TypePairRequest,
 		Version: proto.ProtocolVersion,
+		RNS:     d.rnsKey(),
 		Name:    d.name,
 		Addr:    d.advertiseAddr(),
 	})
@@ -160,6 +162,7 @@ func (d *Daemon) tapPairSession(ctx context.Context, conn net.Conn, peer proto.H
 			Fingerprint: fp,
 			Code:        pairing.Code(d.store.Fingerprint(), fp),
 		},
+		rns:    peer.RNS,
 		decide: make(chan bool, 1),
 		done:   make(chan struct{}),
 	}
@@ -223,6 +226,7 @@ func (d *Daemon) awaitAnswers(ctx context.Context, conn net.Conn, p *pendingPair
 		Fingerprint: p.info.Fingerprint,
 		Addr:        d.resolvePeerAddr(peerAddr, conn.RemoteAddr()),
 		PairedAt:    time.Now(),
+		RNS:         p.rns,
 	}
 	if err := d.store.AddDevice(dev); err != nil {
 		return config.Device{}, fmt.Errorf("save device: %w", err)

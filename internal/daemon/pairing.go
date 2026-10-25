@@ -42,6 +42,7 @@ func (d *Daemon) PairingURI() (string, error) {
 		Fingerprint: d.store.Fingerprint(),
 		CertPEM:     string(d.store.CertPEM()),
 		Addr:        d.advertiseAddr(),
+		RNS:         d.rnsKey(),
 	}
 	return pairing.Encode(p)
 }
@@ -61,6 +62,7 @@ func (d *Daemon) AddPeer(uri string) (config.Device, error) {
 		Fingerprint: p.Fingerprint,
 		Addr:        p.Addr,
 		PairedAt:    time.Now(),
+		RNS:         p.RNS,
 	}
 	if err := d.store.AddDevice(dev); err != nil {
 		return config.Device{}, fmt.Errorf("save device: %w", err)
@@ -88,13 +90,17 @@ func (d *Daemon) helloPeer(dev config.Device) error {
 	if err := proto.WriteControl(conn, proto.Header{
 		Type:        proto.TypeHello,
 		Version:     proto.ProtocolVersion,
+		RNS:         d.rnsKey(),
 		Fingerprint: d.store.Fingerprint(),
 		Name:        d.name,
 		Addr:        d.advertiseAddr(),
 	}); err != nil {
 		return err
 	}
-	_, err = proto.ReadHeader(conn) // their hello
+	theirs, err := proto.ReadHeader(conn)
+	if err == nil {
+		d.store.UpdateRNS(fp, theirs.RNS)
+	}
 	return err
 }
 

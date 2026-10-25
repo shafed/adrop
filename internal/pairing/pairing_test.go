@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/shafed/adrop/internal/config"
+	"rsc.io/qr"
 )
 
 func TestEncodeDecodeRoundtrip(t *testing.T) {
@@ -113,5 +114,44 @@ func TestRenderTerminalNonEmpty(t *testing.T) {
 	}
 	if len(art) == 0 || !strings.Contains(art, "\n") {
 		t.Fatal("expected multi-line QR art")
+	}
+}
+
+func TestEncodeDecodeWithReticulumKey(t *testing.T) {
+	store, err := config.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := Payload{
+		Name:        "pc",
+		Fingerprint: store.Fingerprint(),
+		CertPEM:     string(store.CertPEM()),
+		Addr:        "192.168.1.5:53127",
+		RNS:         strings.Repeat("ab", 64),
+	}
+	uri, err := Encode(p)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	got, err := Decode(uri)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.RNS != p.RNS || got.Version != compactRNSVersion || got.Fingerprint != p.Fingerprint {
+		t.Fatalf("mismatch: %+v", got)
+	}
+	// The QR must stay scannable by a phone camera from a screen: keep it
+	// at or below version 25 (117x117 modules).
+	code, err := qr.Encode(uri, qr.M)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := (code.Size - 17) / 4
+	t.Logf("URI with Reticulum key: %d bytes, QR version %d", len(uri), version)
+	if version > 25 {
+		t.Fatalf("QR version %d is too dense for a phone camera", version)
+	}
+	if _, err := RenderTerminal(uri); err != nil {
+		t.Fatalf("render: %v", err)
 	}
 }

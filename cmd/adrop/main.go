@@ -8,6 +8,7 @@
 //	adrop pair with <device>          pair with a nearby device by code
 //	adrop pair accept                 answer a pairing started on another device
 //	adrop nearby                      list adrop devices seen on the LAN
+//	adrop ping <peer>                 signed ping to a paired device over Reticulum
 //	adrop devices                     list trusted devices
 //	adrop revoke <name|fp>            remove a trusted device
 //	adrop send [<peer>] <files...>    send files (peer optional, uses last-used)
@@ -56,6 +57,8 @@ func main() {
 		err = runDevices(args)
 	case "nearby":
 		err = runNearby(args)
+	case "ping":
+		err = runPing(args)
 	case "revoke":
 		err = runRevoke(args)
 	case "send":
@@ -93,6 +96,7 @@ Usage:
   adrop pair with <device>      pair with a nearby device by comparing a code
   adrop pair accept             answer a pairing started on another device
   adrop nearby                  list adrop devices seen on the LAN
+  adrop ping <peer>             ping a paired device over Reticulum hubs (outside the LAN)
   adrop devices                 list trusted devices
   adrop revoke <name|fp-prefix> revoke (untrust) a device
   adrop send [<peer>] <file...>  send files to a peer (peer optional after first send)
@@ -106,5 +110,7 @@ Environment:
   ADROP_ADVERTISE_IP LAN IP to put in the pairing QR (daemon, auto-detected)
   ADROP_DOWNLOAD_DIR where received files land (daemon, default ~/Downloads)
   ADROP_TAP_PAIR     1 = accept pairing by code from nearby devices (daemon, default off)
+  ADROP_RNS          1 = connect to public Reticulum hubs for use outside the LAN (daemon, default off)
+  ADROP_RNS_HUBS     comma-separated host:port hubs instead of the built-in list and catalog
 `)
 }

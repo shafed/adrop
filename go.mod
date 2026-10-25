@@ -1,13 +1,17 @@
 module github.com/shafed/adrop
 
-go 1.26.0
+go 1.26.2
 
 require (
+	git.quad4.io/Networks/Reticulum-Go v0.9.5
 	golang.org/x/mobile v0.0.0-20261011034528-197770444867
 	rsc.io/qr v0.2.0
 )
 
 require (
+	git.quad4.io/Go-Libs/msgpack/v5 v5.7.0 // indirect
+	git.quad4.io/Go-Libs/tagparser/v2 v2.1.0 // indirect
+	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/mod v0.42.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/tools v0.52.0 // indirect
