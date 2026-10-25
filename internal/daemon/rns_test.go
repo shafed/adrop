@@ -153,3 +153,33 @@ func TestWithoutDirectChannelClipboardGoesThroughHubsAndFilesWait(t *testing.T) 
 		t.Fatalf("queued file: %q %v", got, err)
 	}
 }
+
+func TestPhoneOutboxWaitsForTheLAN(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a := newTestDaemonWith(t, ctx, "phone", func(o *Options) { o.QueueUnreachable = true })
+	b := newTestDaemon(t, ctx, "pc")
+	pair(t, a, b)
+	realAddr, _ := a.store.Lookup("pc")
+	a.store.UpdateAddr(b.store.Fingerprint(), "127.0.0.1:1") // the PC is away
+	go a.d.runQueue(ctx)
+
+	src := filepath.Join(t.TempDir(), "outbox.txt")
+	os.WriteFile(src, []byte("sent when the pc came back"), 0o644)
+	reason, err := a.d.SendFilesOrQueue(ctx, "pc", []string{src}, func(string) {})
+	if err != nil || !strings.Contains(reason, "back on this network") {
+		t.Fatalf("not queued: %q %v", reason, err)
+	}
+	// The PC shows up on the LAN again (mDNS / NsdManager).
+	a.d.AddNearby("pc", realAddr.Addr, b.store.Fingerprint())
+	deadline := time.Now().Add(20 * time.Second)
+	for len(a.d.Queue()) > 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("outbox never drained: %+v", a.d.Queue())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if got, _ := os.ReadFile(filepath.Join(b.download, "outbox.txt")); string(got) != "sent when the pc came back" {
+		t.Fatalf("got %q", got)
+	}
+}

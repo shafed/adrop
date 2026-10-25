@@ -1,6 +1,6 @@
 // Command adrop is the desktop app, the resident daemon and the thin CLI client.
 //
-//	adrop                             open the drag-drop window (default)
+//	adrop                             open the window (adrop-gui)
 //	adrop daemon                      run the resident daemon (systemd user service)
 //	adrop status                      show daemon status
 //	adrop pair show                   display this device's pairing QR
@@ -15,31 +15,27 @@
 //	adrop send [<peer>] <files...>    send files (peer optional, uses last-used)
 //	adrop clip [<peer>] [text]        push clipboard (peer optional, uses last-used)
 //
-// The GUI and the CLI both talk to the daemon over a Unix-domain socket; only
-// `daemon` runs the long-lived process. Headless builds (`make build-headless`)
-// have no window, so a bare `adrop` prints usage there.
+// The window (adrop-gui) and the CLI both talk to the daemon over a
+// Unix-domain socket; only `daemon` runs the long-lived process.
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"syscall"
 )
 
 func main() {
-	// No arguments: open the window. Fall back to usage when there is nothing to
-	// open — a headless build, or a session with no display (over SSH, say),
-	// where the GUI toolkit would abort the process with a stack trace.
+	// No arguments: open the window (adrop-gui, the Flutter app in app/), or
+	// print usage where there is none to open.
 	if len(os.Args) < 2 {
-		if !guiAvailable || !displayAvailable() {
-			if guiAvailable {
-				fmt.Fprint(os.Stderr, "adrop: no display (DISPLAY/WAYLAND_DISPLAY unset) — no window to open\n\n")
-			}
+		if err := openWindow(); err != nil {
+			fmt.Fprintf(os.Stderr, "adrop: %v\n\n", err)
 			usage()
 			os.Exit(2)
-		}
-		if err := runGUI(); err != nil {
-			fmt.Fprintf(os.Stderr, "adrop: %v\n", err)
-			os.Exit(1)
 		}
 		return
 	}
@@ -87,11 +83,7 @@ func usage() {
 
 Usage:
 `)
-	if guiAvailable {
-		fmt.Fprint(os.Stderr, "  adrop                         open the drag-drop window (default)\n")
-	} else {
-		fmt.Fprint(os.Stderr, "  (headless build — no window; rebuild with `make build` for the GUI)\n")
-	}
+	fmt.Fprint(os.Stderr, "  adrop                         open the window (adrop-gui)\n")
 	fmt.Fprint(os.Stderr, `  adrop daemon                  run the resident daemon
   adrop status                  show daemon status & this device's identity
   adrop pair show               display this device's pairing QR (waits to pair)
@@ -117,4 +109,31 @@ Environment:
   ADROP_RNS          1 = connect to public Reticulum hubs for use outside the LAN (daemon, default off)
   ADROP_RNS_HUBS     comma-separated host:port hubs instead of the built-in list and catalog
 `)
+}
+
+// openWindow replaces this process with adrop-gui, found next to this binary
+// or on PATH.
+func openWindow() error {
+	if os.Getenv("WAYLAND_DISPLAY") == "" && os.Getenv("DISPLAY") == "" {
+		return errors.New("no display (DISPLAY/WAYLAND_DISPLAY unset), no window to open")
+	}
+	gui := ""
+	if self, err := os.Executable(); err == nil {
+		if p := filepath.Join(filepath.Dir(self), "adrop-gui"); fileExists(p) {
+			gui = p
+		}
+	}
+	if gui == "" {
+		p, err := exec.LookPath("adrop-gui")
+		if err != nil {
+			return errors.New("the window is not installed (make app-install)")
+		}
+		gui = p
+	}
+	return syscall.Exec(gui, []string{gui}, os.Environ())
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
 }

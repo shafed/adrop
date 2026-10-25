@@ -1,8 +1,9 @@
 [Desktop Entry]
 Type=Application
 Name=adrop
-Comment=Send files to paired devices
-Exec=adrop
-Icon=network-wireless
+Comment=Send files and clipboard to your own devices
+Exec=adrop-gui
+Icon=adrop
 Terminal=false
 Categories=Network;FileTransfer;
+StartupWMClass=dev.adrop.gui

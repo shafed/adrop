@@ -233,6 +233,7 @@ type rnsFields struct {
 	// texts arriving through the hubs in parts.
 	queueMu   sync.Mutex
 	queueKick chan struct{}
+	queueAll  bool // Options.QueueUnreachable
 	clipMu    sync.Mutex
 	clips     map[string]*clipParts
 }

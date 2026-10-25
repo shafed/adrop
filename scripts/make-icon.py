@@ -2,7 +2,8 @@
 """Generate the adrop launcher icon set (PNG only). Requires Pillow.
 
 Usage: python3 scripts/make-icon.py OUTDIR
-Then copy OUTDIR/android/mipmap-*/ic_launcher.png into app/android/app/src/main/res/
+Then copy OUTDIR/android/mipmap-*/ic_launcher.png and drawable-*/ic_notification.png
+into app/android/app/src/main/res/
 and OUTDIR/linux/*.png, icon-512.png into packaging/icons/.
 """
 import math
@@ -106,6 +107,18 @@ def main():
     save(img, 256, "linux/adrop-256.png")
     save(img, 128, "linux/adrop-128.png")
     preview(img)
+    notification(img)
+
+
+def notification(img):
+    """Android's status-bar icon: the drop as a white silhouette (the system
+    uses only the alpha channel), arrows cut out."""
+    r, g, b, a = img.split()
+    drop = Image.eval(Image.merge("RGB", (r, g, b)).convert("L"), lambda v: 255 if v > 200 else 0)
+    sil = Image.new("RGBA", img.size, (255, 255, 255, 0))
+    sil.putalpha(drop)
+    for name, sz in [("mdpi", 24), ("hdpi", 36), ("xhdpi", 48), ("xxhdpi", 72), ("xxxhdpi", 96)]:
+        save(sil, sz, f"android/drawable-{name}/ic_notification.png")
 
 
 if __name__ == "__main__":

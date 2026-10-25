@@ -73,6 +73,7 @@ func (d *Daemon) servePeer(ctx context.Context, conn net.Conn, fp string, lan bo
 	if lan && d.tryCompletePairing(fp, hello.Name, hello.Addr, conn.RemoteAddr()) {
 		d.store.UpdateRNS(fp, hello.RNS)
 		d.logger.Printf("paired with %s (%s)", hello.Name, fp[:16])
+		d.broadcast(ipc.Event{Kind: "paired", Peer: hello.Name})
 		return
 	}
 
@@ -307,7 +308,7 @@ func (d *Daemon) receiveFilesWithProgress(ctx context.Context, conn net.Conn, pe
 		})
 		d.logger.Printf("received %s (%d bytes) from %s", filepath.Base(path), meta.Size, peerName)
 		d.broadcast(ipc.Event{
-			Kind: "recv-file-done", Peer: peerName, File: filepath.Base(path),
+			Kind: "recv-file-done", Peer: peerName, File: filepath.Base(path), Path: path,
 			Index: hdr.FileIndex, Count: count, BytesDone: meta.Size, Total: meta.Size,
 		})
 	}

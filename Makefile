@@ -1,6 +1,4 @@
 BINARY := adrop
-# The resident daemon runs from its own CGO-free binary so the long-lived
-# service never depends on the X11/GL libraries the GUI links.
 DAEMON_BINARY := adrop-daemon
 RELAY_BINARY := adrop-relay
 PREFIX ?= $(HOME)/.local
@@ -10,22 +8,22 @@ UNITDIR := $(HOME)/.config/systemd/user
 DOLPHIN_DIR := $(HOME)/.local/share/kio/servicemenus
 APPS_DIR := $(HOME)/.local/share/applications
 
-.PHONY: all build build-daemon build-relay build-headless test test-gui vet \
-        vet-gui race install install-headless relay-install relay-uninstall \
-        uninstall clean dolphin-install dolphin-uninstall gui-install \
-        gui-uninstall
+.PHONY: all build build-daemon build-relay test vet race install relay-install \
+        relay-uninstall uninstall clean dolphin-install dolphin-uninstall \
+        core-android app-linux app-android app-install app-uninstall
+
+APP_DIR := $(HOME)/.local/lib/adrop-gui
+ICON_DIR := $(HOME)/.local/share/icons/hicolor
+FLUTTER ?= flutter
 
 all: build
 
-# The default build includes the GUI, so a bare `adrop` opens the drop window.
-# Fyne needs CGO and a C toolchain plus the X11/GL dev headers (libgl/mesa,
-# libxcursor, libxrandr, libxinerama, libxi, libxxf86vm).
+# One static, CGO-free binary: the CLI, and the daemon the systemd unit runs
+# (installed a second time as adrop-daemon, the name the unit has always
+# used). The window is the Flutter app in app/ (app-linux).
 build:
-	CGO_ENABLED=1 go build -tags gui -o $(BINARY) ./cmd/adrop
+	CGO_ENABLED=0 go build -o $(BINARY) ./cmd/adrop
 
-# build-daemon produces the static, CGO-free binary the systemd unit runs. Same
-# source, no `gui` tag: the resident service keeps working across a mesa/xorg
-# change, and on a Wayland-only box with no X11 client libraries installed.
 build-daemon:
 	CGO_ENABLED=0 go build -o $(DAEMON_BINARY) ./cmd/adrop
 
@@ -34,52 +32,53 @@ build-daemon:
 build-relay:
 	CGO_ENABLED=0 go build -o $(RELAY_BINARY) ./cmd/adrop-relay
 
-# build-headless produces the same CGO-free binary under the plain `adrop` name,
-# for machines with no display stack. It has no window, so a bare `adrop` prints
-# usage there.
-build-headless:
-	CGO_ENABLED=0 go build -o $(BINARY) ./cmd/adrop
-
 test:
 	go test ./...
 
 vet:
 	go vet ./...
 
-# `go vet ./...` compiles gui_stub.go, not gui.go, so the GUI needs its own pass.
-# Kept separate so `make vet` still runs without the X11/GL dev headers.
-vet-gui:
-	CGO_ENABLED=1 go vet -tags gui ./...
-
-# The GUI's own tests (Fyne's test driver, no display needed) are behind the
-# same tag as the code they cover, so `make test` alone doesn't compile them.
-test-gui:
-	CGO_ENABLED=1 go test -tags gui ./...
-
 race:
 	go test -race ./...
 
-# Two binaries: the GUI/CLI `adrop` the user runs, and the CGO-free
-# `adrop-daemon` the systemd unit runs.
-install: build build-daemon
+install: build
 	install -Dm755 $(BINARY) $(BINDIR)/$(BINARY)
-	install -Dm755 $(DAEMON_BINARY) $(BINDIR)/$(DAEMON_BINARY)
+	install -Dm755 $(BINARY) $(BINDIR)/$(DAEMON_BINARY)
 	install -Dm644 packaging/systemd/adrop.service $(UNITDIR)/adrop.service
 	@echo "Installed. Enable with:"
 	@echo "  systemctl --user daemon-reload"
 	@echo "  systemctl --user enable --now adrop"
-	@echo "(upgrading: the unit now runs $(DAEMON_BINARY), so restart it too)"
 
-# The headless install has no GUI binary to keep separate, so the one CGO-free
-# build is installed under both names — the unit's ExecStart is the same either
-# way.
-install-headless: build-headless
-	install -Dm755 $(BINARY) $(BINDIR)/$(BINARY)
-	install -Dm755 $(BINARY) $(BINDIR)/$(DAEMON_BINARY)
-	install -Dm644 packaging/systemd/adrop.service $(UNITDIR)/adrop.service
-	@echo "Installed headless binary. Enable the daemon with:"
-	@echo "  systemctl --user daemon-reload"
-	@echo "  systemctl --user enable --now adrop"
+# The Android app embeds the Go core (core/) through gomobile.
+core-android:
+	bash scripts/build-core.sh
+
+app-android: core-android
+	cd app && $(FLUTTER) build apk --release
+
+# The window: a client of the daemon over its Unix socket, like the CLI.
+app-linux:
+	cd app && $(FLUTTER) build linux --release
+
+# app-install puts the window bundle in $(APP_DIR), adrop-gui on PATH (a bare
+# `adrop` runs it), the icon in the user's icon theme and an app-menu entry.
+app-install: app-linux
+	rm -rf $(APP_DIR)
+	install -d $(APP_DIR)
+	cp -r app/build/linux/x64/release/bundle/. $(APP_DIR)/
+	install -d $(BINDIR)
+	ln -sf $(APP_DIR)/adrop-gui $(BINDIR)/adrop-gui
+	install -Dm644 packaging/icons/adrop-256.png $(ICON_DIR)/256x256/apps/adrop.png
+	install -Dm644 packaging/icons/adrop-128.png $(ICON_DIR)/128x128/apps/adrop.png
+	install -Dm644 packaging/icons/adrop-512.png $(ICON_DIR)/512x512/apps/adrop.png
+	@install -d $(APPS_DIR)
+	sed 's|^Exec=adrop-gui$$|Exec=$(BINDIR)/adrop-gui|' packaging/desktop/adrop-gui.desktop \
+	  > $(APPS_DIR)/adrop-gui.desktop
+	@chmod 644 $(APPS_DIR)/adrop-gui.desktop
+
+app-uninstall:
+	rm -rf $(APP_DIR) $(BINDIR)/adrop-gui $(APPS_DIR)/adrop-gui.desktop
+	rm -f $(ICON_DIR)/256x256/apps/adrop.png $(ICON_DIR)/128x128/apps/adrop.png $(ICON_DIR)/512x512/apps/adrop.png
 
 # relay-install is opt-in: FCM wake needs a Firebase service-account key, which
 # not every install has. adrop.service Wants= the relay unit, so once this is
@@ -105,14 +104,12 @@ uninstall:
 clean:
 	rm -f $(BINARY) $(DAEMON_BINARY) $(RELAY_BINARY)
 
-# Both .desktop installs rewrite Exec= to an absolute path: the desktop session's
+# The .desktop installs rewrite Exec= to an absolute path: the desktop session's
 # PATH does not necessarily include $(BINDIR) (systemd --user starts with a bare
 # PATH). The files in packaging/ keep the portable bare `Exec=adrop ...` form.
-# They deliberately do NOT depend on `install`: copying one .desktop file must
-# not rebuild and overwrite the installed binary (which would undo a deliberate
-# `make install-headless`), and the Dolphin menu is pure CLI, installable on a
-# box without Fyne's build dependencies. They only warn if the path they bake in
-# isn't there yet.
+# dolphin-install deliberately does NOT depend on `install`: copying one .desktop file must
+# not rebuild and overwrite the installed binary. It only warns if the path it
+# bakes in isn't there yet.
 dolphin-install:
 	@install -d $(DOLPHIN_DIR)
 	sed 's|^Exec=$(BINARY)\b|Exec=$(BINDIR)/$(BINARY)|' packaging/dolphin/adrop.desktop \
@@ -124,15 +121,3 @@ dolphin-install:
 
 dolphin-uninstall:
 	rm -f $(DOLPHIN_DIR)/adrop.desktop
-
-gui-install:
-	@install -d $(APPS_DIR)
-	sed 's|^Exec=$(BINARY)\b|Exec=$(BINDIR)/$(BINARY)|' packaging/desktop/adrop-gui.desktop \
-	  > $(APPS_DIR)/adrop-gui.desktop
-	@chmod 644 $(APPS_DIR)/adrop-gui.desktop
-	@test -x $(BINDIR)/$(BINARY) || \
-	  echo "note: $(BINDIR)/$(BINARY) does not exist yet — run 'make install'"
-	@echo "Installed app launcher pointing at $(BINDIR)/$(BINARY)."
-
-gui-uninstall:
-	rm -f $(APPS_DIR)/adrop-gui.desktop

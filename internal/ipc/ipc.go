@@ -58,6 +58,7 @@ type Event struct {
 	Total     int64     `json:"total"` // total bytes for the current file (if known)
 	Err       string    `json:"err,omitempty"`
 	Pair      *PairInfo `json:"pair,omitempty"` // pair-* events
+	Path      string    `json:"path,omitempty"` // recv-file-done: where the file landed
 }
 
 // Request is a single CLI->daemon command.

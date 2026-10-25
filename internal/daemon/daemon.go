@@ -108,6 +108,11 @@ type Options struct {
 	Reticulum bool
 	RNSHubs   []string
 
+	// QueueUnreachable queues sends to a device that cannot be reached and
+	// retries them, also without Reticulum: the phone's outbox, which sends
+	// once the PC is back on the network.
+	QueueUnreachable bool
+
 	// ClipboardSet/Get override the system clipboard (used in tests). When nil
 	// the wl-clipboard-backed defaults are used.
 	ClipboardSet func(ctx context.Context, data []byte, mime string) error
@@ -165,6 +170,7 @@ func New(opt Options) (*Daemon, error) {
 		nearby:       make(map[string]ipc.NearbyInfo),
 	}
 	d.rnsEnabled, d.rnsHubs = opt.Reticulum, opt.RNSHubs
+	d.queueAll = opt.QueueUnreachable
 	d.pongs = make(map[string]chan struct{})
 	d.iceSetups = make(map[string]chan direct.Msg)
 	d.queueKick = make(chan struct{}, 1)
@@ -209,6 +215,25 @@ func (d *Daemon) runPeerListener(ctx context.Context) error {
 	d.acceptLoop(ctx, tlsLn, d.handlePeer)
 	return ctx.Err()
 }
+
+// Serve runs the peer listener, Reticulum (when on) and the send queue, with
+// no IPC socket and no avahi: the embedded core of the phone app, where
+// the platform does discovery (NsdManager) and the UI calls in directly.
+func (d *Daemon) Serve(ctx context.Context) error {
+	if d.rnsEnabled {
+		d.startRNS(ctx)
+	} else if d.queueAll {
+		go d.runQueue(ctx)
+	}
+	return d.runPeerListener(ctx)
+}
+
+// Subscribe registers for daemon events (receives, pairings, the queue);
+// cancel stops them.
+func (d *Daemon) Subscribe() (<-chan ipc.Event, func()) { return d.subscribe() }
+
+// Name is the name this device announces.
+func (d *Daemon) Name() string { return d.name }
 
 // Run starts the TLS peer listener and the IPC socket and blocks until ctx is
 // canceled or a fatal error occurs.
@@ -464,6 +489,9 @@ func (d *Daemon) AddNearby(name, addr, fp string) {
 	d.nearby[name] = ipc.NearbyInfo{Name: name, Addr: addr, Fingerprint: fp}
 	d.nearbyMu.Unlock()
 	d.store.UpdateAddr(fp, addr)
+	if _, paired := d.store.IsTrusted(fp); paired {
+		d.kickQueue() // a paired device showed up: queued sends may go now
+	}
 }
 
 // RemoveNearby forgets a device whose announcement went away.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Ворота adrop. Итог: GREEN, RED (дефект продукта) или ENVIRONMENT GAP
 # (нет инструментов). Результат пишется заметкой refs/notes/gate на HEAD —
-# только на чистом дереве и не в CI. --android добавляет юнит-тесты Android.
+# только на чистом дереве и не в CI. --app добавляет flutter analyze приложения.
 set -u
 set -o pipefail
 
@@ -9,8 +9,8 @@ root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "RESULT ENVIRONMENT 
 cd "$root"
 grep -q '^module ' go.mod 2>/dev/null || { echo "RESULT ENVIRONMENT GAP"; exit 2; }
 
-android=no
-[ "${1:-}" = "--android" ] && android=yes
+app=no
+[ "${1:-}" = "--app" ] && app=yes
 
 gaps=0 failures=0 results=()
 note_head=$(git rev-parse HEAD)
@@ -28,8 +28,8 @@ finish() {
   else
     local body
     body=$(jq -nc --arg r "$result" --arg go "$(go env GOVERSION)" --arg when "$(date -Iseconds)" \
-      --argjson android "$([ $android = yes ] && echo true || echo false)" \
-      '{result:$r,go:$go,android:$android,when:$when}') &&
+      --argjson app "$([ $app = yes ] && echo true || echo false)" \
+      '{result:$r,go:$go,app:$app,when:$when}') &&
       git notes --ref=gate add -f -m "$body" "$note_head" >/dev/null 2>&1 &&
       echo "gate note: refs/notes/gate on $(git rev-parse --short "$note_head") ($result)" ||
       echo "gate note: NOT written (git notes or jq failed)"
@@ -54,12 +54,12 @@ for tool in go gofmt jq; do
   command -v "$tool" >/dev/null || { echo "нет $tool" >&2; results+=("GAP $tool"); gaps=$((gaps + 1)); }
 done
 if [ "$(go env CC 2>/dev/null)" ] && ! command -v "$(go env CC)" >/dev/null; then
-  echo "для -race и сборки gui нужен компилятор C: $(go env CC)" >&2
+  echo "для -race нужен компилятор C: $(go env CC)" >&2
   results+=("GAP cc"); gaps=$((gaps + 1))
 fi
-if [ $android = yes ] && { [ -z "${JAVA_HOME:-}" ] || [ -z "${ANDROID_HOME:-}" ]; }; then
-  echo "--android требует JAVA_HOME и ANDROID_HOME" >&2
-  results+=("GAP android-env"); gaps=$((gaps + 1))
+if [ $app = yes ] && ! command -v "${FLUTTER:-flutter}" >/dev/null; then
+  echo "--app требует flutter (или FLUTTER=путь)" >&2
+  results+=("GAP flutter"); gaps=$((gaps + 1))
 fi
 if [ "$gaps" -ne 0 ]; then
   printf '\n== SUMMARY ==\n%s\nRESULT ENVIRONMENT GAP\n' "$(printf '%s\n' "${results[@]}")"
@@ -68,12 +68,10 @@ fi
 
 run_check vet go vet ./...
 run_check gofmt check_gofmt
-run_check vet-gui env CGO_ENABLED=1 go vet -tags gui ./...
 run_check build-nocgo env CGO_ENABLED=0 go build ./...
 run_check test go test -race ./...
-run_check test-gui env CGO_ENABLED=1 go test -tags gui ./...
-if [ $android = yes ]; then
-  run_check android bash -c 'cd android && ./gradlew testDebugUnitTest --no-daemon'
+if [ $app = yes ]; then
+  run_check app bash -c 'cd app && "${FLUTTER:-flutter}" analyze'
 fi
 
 printf '\n== SUMMARY ==\n%s\n' "$(printf '%s\n' "${results[@]}")"

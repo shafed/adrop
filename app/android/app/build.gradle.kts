@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-    namespace = "com.adrop.adrop_app"
+    namespace = "com.adrop.app"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -15,11 +15,13 @@ android {
     }
 
     defaultConfig {
-        // A prototype installed next to the current com.adrop app, not over it.
-        applicationId = "com.adrop.proto"
+        // The app it replaces had this id too: it updates in place only if
+        // signed with the same key, otherwise the old one is removed first.
+        applicationId = "com.adrop"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        // MediaStore Downloads (received files) needs Android 10.
+        minSdk = 29
         targetSdk = flutter.targetSdkVersion
         // Uses the version code from pubspec.yaml. When using split APKs, 1000 * ABI_VERSION
         // is added automatically by Flutter. (https://developer.android.com/studio/build/configure-apk-splits#configure-APK-versions)

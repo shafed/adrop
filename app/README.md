@@ -1,18 +1,14 @@
-# app — Flutter prototype (PLAN.md, step 1)
+# app — the adrop window and phone app
 
-One screen over the Go core (`core/`): pair with a PC daemon by its
-`adrop://pair?d=…` URI (`adrop pair show`), then **Hello**. The daemon logs
-`hello from <name> (<fingerprint>)`.
-
-The core is not built by Flutter; build it first:
+One Flutter app. On Linux it is the window, a client of the daemon over its
+Unix socket (`lib/backend/ipc_backend.dart`), like the CLI. On Android it
+talks to the Go core (`core/`) running in `AdropService`
+(`lib/backend/channel_backend.dart`, Kotlin in `android/app/src/main/kotlin`).
 
 ```sh
-bash scripts/build-core.sh linux     # app/build/native/linux/libadrop_core.so
-bash scripts/build-core.sh android   # app/android/app/libs/core.aar (gomobile)
-cd app && flutter build linux        # or: flutter build apk
+make app-linux       # from the repository root; make app-install installs it
+make app-android     # builds the core (scripts/build-core.sh), then the APK
 ```
 
-`ADROP_ANDROID_TARGET=android/arm64,android/amd64` adds the emulator's ABI.
-On Android it installs as `com.adrop.proto`, next to the current `com.adrop`.
-On Linux its identity lives in `$XDG_DATA_HOME/adrop-proto`, separate from
-the daemon's.
+`ADROP_ANDROID_TARGET=android/arm64,android/amd64` adds the emulator's ABI to
+the core.

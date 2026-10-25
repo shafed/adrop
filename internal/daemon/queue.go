@@ -162,7 +162,7 @@ func (d *Daemon) retryQueue(ctx context.Context) {
 				go notify.Send(context.Background(), "Sent to "+it.Name, "A queued send went through.")
 			case errors.As(err, &ue):
 				cur[i].Tries++
-				cur[i].Reason = waitReason(it.Name, err)
+				cur[i].Reason = d.waitReason(ue.dev, err)
 			default:
 				// The peer was reached and refused, or a file is gone: retrying
 				// will not help.
@@ -177,7 +177,11 @@ func (d *Daemon) retryQueue(ctx context.Context) {
 	}
 }
 
-func waitReason(name string, err error) string {
+func (d *Daemon) waitReason(dev config.Device, err error) string {
+	name := dev.Name
+	if node, _ := d.rnsState(); node == nil || dev.RNS == "" {
+		return fmt.Sprintf("%s cannot be reached now; it goes when %s is back on this network. Last error: %v", name, name, err)
+	}
 	return fmt.Sprintf("%s is outside this network and no direct channel came up "+
 		"(both sides are probably behind strict NATs, e.g. two phones on mobile data); "+
 		"it goes as soon as one of them is reachable, for example on Wi-Fi. Last error: %v", name, err)
@@ -187,11 +191,14 @@ func waitReason(name string, err error) string {
 // was not reached, and it can be reached outside the LAN later.
 func (d *Daemon) queueable(err error) (config.Device, bool) {
 	var ue *unreachableError
-	if !errors.As(err, &ue) || ue.dev.RNS == "" {
+	if !errors.As(err, &ue) {
 		return config.Device{}, false
 	}
+	if d.queueAll {
+		return ue.dev, true
+	}
 	node, _ := d.rnsState()
-	return ue.dev, node != nil
+	return ue.dev, node != nil && ue.dev.RNS != ""
 }
 
 // SendFilesOrQueue sends now, or queues the send when the device cannot be
@@ -202,7 +209,7 @@ func (d *Daemon) SendFilesOrQueue(ctx context.Context, target string, paths []st
 	if !ok {
 		return "", err
 	}
-	it := d.enqueue(queued{Peer: dev.Fingerprint, Name: dev.Name, Paths: paths, Reason: waitReason(dev.Name, err)})
+	it := d.enqueue(queued{Peer: dev.Fingerprint, Name: dev.Name, Paths: paths, Reason: d.waitReason(dev, err)})
 	return it.Reason, nil
 }
 
@@ -225,7 +232,7 @@ func (d *Daemon) SendClipboardAnywhere(ctx context.Context, target string, data 
 			d.logger.Printf("clipboard through hubs to %s: %v", dev.Name, herr)
 		}
 	}
-	it := d.enqueue(queued{Peer: dev.Fingerprint, Name: dev.Name, Clip: data, Reason: waitReason(dev.Name, err)})
+	it := d.enqueue(queued{Peer: dev.Fingerprint, Name: dev.Name, Clip: data, Reason: d.waitReason(dev, err)})
 	return "queued: " + it.Reason, nil
 }
 

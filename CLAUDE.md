@@ -1,15 +1,19 @@
 # adrop
 
 Передача файлов и буфера между своими устройствами: Go-демон и CLI на ПК
-(`cmd/`, `internal/`), приложение на Android (`android/`). Цель —
+(`cmd/`, `internal/`), Go-ядро для телефона (`core/`), Flutter-приложение —
+окно ПК и приложение Android (`app/`). Цель —
 `SPEC.md`, очередь работ — `PLAN.md`, действующие решения — `STATUS.md`.
 
 ## Команды
 
-- Ворота: `bash scripts/verify.sh` (vet, gofmt, сборка без cgo, `go test -race`,
-  GUI-проверки); `--android` добавляет `testDebugUnitTest` (нужны `JAVA_HOME`,
-  `ANDROID_HOME`, см. README). Одна проверка: `go test ./internal/daemon -run Name`.
-- Сборка: `make build` (с GUI, cgo), `make build-daemon` (статический).
+- Ворота: `bash scripts/verify.sh` (vet, gofmt, сборка без cgo, `go test -race`);
+  `--app` добавляет `flutter analyze`. Тесты против Reticulum берут `rnsd`
+  (`ADROP_RNSD` или `PATH`), без него пропускаются. Одна проверка:
+  `go test ./internal/daemon -run Name`.
+- Сборка: `make build` (CLI и демон), `make app-linux`, `make app-android`
+  (ядро через `scripts/build-core.sh`; Android-сборки — на стенде
+  `../pulsar/scripts/android/emu.sh flutter`, кэши на `/mnt/hdd`).
 - Снимок состояния: `bash scripts/snapshot.sh`.
 
 ## Состояние и ворота
@@ -31,7 +35,7 @@ ENVIRONMENT GAP, не красное и не зелёное. Заметка пи
 1. Нет двух живых реализаций одной подсистемы; временную второй убирает тот же шаг, что её создал.
 2. Поведение не «улучшается» попутно: правило из SPEC переносится как есть или отступление записывается с причиной.
 3. Каждый шаг кончается собирающимся и тестируемым деревом.
-4. `internal/proto` и `android/.../Proto.kt` байт-совместимы: правка с одной стороны — с другой и с тестами на обеих.
+4. Протокол реализован один раз, в `internal/proto`; телефон пользуется им через `core/`.
 5. Новая функция коммитится отдельно от её включения; включается после прогона на реальных устройствах.
 6. Android здесь собирается, но на устройстве запускает владелец; без его подтверждения поведение не проверено.
 

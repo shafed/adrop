@@ -8,7 +8,7 @@ This repository implements the **PC side** (Arch Linux) from
 resident **daemon** and a thin **CLI**. Running `adrop` with no arguments opens
 the drag-drop window; the CLI lives under explicit subcommands.
 
-The Android side lives in `android/`. Because the daemon is symmetric — it both
+The phone app lives in `app/` (Flutter, with the Go core from `core/`). Because the daemon is symmetric — it both
 serves and originates transfers — two PCs can pair and exchange files directly,
 which is also how the protocol is integration-tested.
 
@@ -47,40 +47,31 @@ The target is described in [`SPEC.md`](SPEC.md), the order of work in
 ## Build & install
 
 ```sh
-make build              # produces ./adrop (with the GUI)
+make build              # produces ./adrop (CLI + daemon), static, CGO_ENABLED=0
 make test               # unit + integration tests
 make race               # tests under the race detector
-make install            # installs both binaries to ~/.local/bin + systemd unit
-make gui-install        # add the app-menu launcher
+make install            # ~/.local/bin/adrop and adrop-daemon + the systemd unit
+make app-install        # the window (Flutter, app/): adrop-gui, icon, app menu
 systemctl --user daemon-reload
 systemctl --user enable --now adrop
 ```
 
-`make install` installs **two** binaries from the same source:
+`make install` puts the one binary under two names: `adrop` for the CLI and
+`adrop-daemon`, which the systemd unit runs (`ExecStart=…/adrop-daemon daemon`).
 
-- `adrop` — the window and the CLI. Built with the GUI, so it needs
-  `CGO_ENABLED=1`, a C toolchain and Fyne's Linux prerequisites: `libgl`/`mesa`,
-  `libxcursor`, `libxrandr`, `libxinerama`, `libxi`, `libxxf86vm` dev headers.
-- `adrop-daemon` — what the systemd unit runs (`ExecStart=…/adrop-daemon
-daemon`). Static and `CGO_ENABLED=0`, so the resident service does not depend
-  on the X11/GL libraries the GUI links and keeps running across a mesa/xorg
-  change.
-
-**Upgrading from a single-binary install:** the unit's `ExecStart` changed, so
-run `systemctl --user daemon-reload && systemctl --user restart adrop` after
-`make install`. A stale `~/.local/bin/adrop` left over from before is harmless
-(`make uninstall` removes both).
-
-On a machine with no display stack, build the daemon/CLI only:
+The window and the phone app are one Flutter app in `app/` (needs the
+Flutter SDK; `FLUTTER=/path/to/flutter make …`). On the PC it is a client of
+the daemon over its socket, like the CLI. The phone app embeds the Go core
+(`core/`, built by `make core-android`, which needs gomobile and the Android
+NDK) and runs it in a foreground service:
 
 ```sh
-make build-headless     # static, CGO_ENABLED=0, no Fyne dependency
-make install-headless
+make app-linux          # app/build/linux/x64/release/bundle/adrop-gui
+make app-android        # app/build/app/outputs/flutter-apk/app-release.apk
 ```
 
-That binary has no window, so a bare `adrop` prints usage there; everything
-else — daemon, CLI, systemd unit — is identical. `install-headless` puts the one
-CGO-free build under both names, so the unit's `ExecStart` works unchanged.
+The phone app installs as `com.adrop`. The previous Kotlin app had the same
+id but another signing key: remove it before installing this one.
 
 Runtime dependencies: `wl-clipboard` (`wl-copy`/`wl-paste`) for clipboard,
 `libnotify` (`notify-send`) for notifications. Neither is required for file
@@ -114,41 +105,18 @@ systemd skip it instead of crash-looping.
 adrop-relay`. A stopped relay shows up in the daemon's journal as
 `FCM wake failed: Post "http://localhost:18080/wake": … connection refused`.
 
-### GUI
+### The window
 
-> The window is built with Fyne and will be replaced by a Flutter UI
-> ([`PLAN.md`](PLAN.md), step 5). Until then it is the PC's window.
-
-A small drag-drop window for the PC side — drop files onto it to send to the
-last-used (or chosen) peer, paste a `file:///` path, push the clipboard, and
-watch incoming transfers live. It's a thin IPC client of the daemon, exactly
-like the CLI.
-
-Launch it from the app menu (`make gui-install`) or by running `adrop` with no
-arguments. If the daemon isn't running, the window says so and offers a
-**Start daemon** button rather than failing.
-
-**Managing devices.** The gear button next to the peer dropdown opens the
-device list: each trusted device with its fingerprint and last-known address,
-plus **Add device…** (the pairing QR, same as `adrop pair show`), rename, and
-revoke. Renaming only changes the display name — trust is pinned to the
-fingerprint — and revoke asks for confirmation first. Every action is an IPC
-round-trip to the daemon; if one fails, the dialog shows the error and the list
-is left unchanged.
-
-The GUI is isolated behind a `gui` build tag, which `make build` sets; only
-`make build-headless` drops it. There is no `adrop gui` subcommand — a bare
-`adrop` is the way to open the window.
-
-**Upgrading:** the `gui` subcommand used to exist, and launchers installed by
-an older `make gui-install` still run `adrop gui`, which now fails with
-"unknown command" — silently, since the entry is `Terminal=false`. Re-run
-`make gui-install` once to rewrite the launcher.
+One column, the same as the phone: the paired devices to send to, nearby
+adrop devices to pair with, files (choose, drop onto the window, or Ctrl+V a
+copied path), the clipboard, and what came in. If the daemon isn't running,
+the window says so and offers **Start daemon**. The QR button pairs by QR, the
+devices button renames and revokes, Esc goes back. A bare `adrop` opens it.
 
 ## Usage
 
 ```sh
-adrop                         # open the drag-drop window (default)
+adrop                         # open the window (adrop-gui)
 adrop daemon                  # run the resident daemon (normally via systemd)
 adrop status                  # show this device's identity & trusted count
 adrop pair show               # display pairing QR, wait for a peer to pair
@@ -157,6 +125,11 @@ adrop devices                 # list trusted devices
 adrop revoke <name|fp-prefix> # revoke (untrust) a device
 adrop send [<peer>] <file...> # send files (one session) to a peer
 adrop clip [<peer>] [text]    # push clipboard (or given text) to a peer
+adrop nearby                  # adrop devices on the LAN (ADROP_TAP_PAIR=1 to pair)
+adrop pair with <device>      # pair with a nearby device by comparing a code
+adrop pair accept             # answer a pairing started on the other device
+adrop ping <peer>             # signed ping over Reticulum (ADROP_RNS=1)
+adrop queue [rm <id>]         # sends waiting for their device to be reachable
 ```
 
 `<peer>` is optional after the first send — it defaults to the last-used peer.
@@ -231,7 +204,8 @@ encoded as lowercase hex (64 chars). See [`internal/proto`](internal/proto/proto
 ## Layout
 
 ```
-cmd/adrop/            CLI + daemon entrypoint (+ Fyne window under the gui tag)
+cmd/adrop/            CLI + daemon entrypoint (a bare `adrop` runs adrop-gui)
+core/                 the daemon as an embeddable core for the phone app (gomobile)
 cmd/adrop-relay/      optional local FCM wake relay
 internal/config/      identity (TLS cert) + trusted-device store
 internal/proto/       wire framing & message types
@@ -243,8 +217,11 @@ internal/ipc/         CLI↔daemon Unix-socket control protocol
 internal/daemon/      daemon: receive, send, pairing, IPC handling
 internal/mdns/        _adrop._tcp advertise/browse via avahi
 internal/fcm/         FCM HTTP v1 sender used by adrop-relay
-android/              Android app (Kotlin/Compose)
+internal/rns/         Reticulum endpoint and hub manager (outside the LAN)
+internal/direct/      direct channel: ICE + STUN + QUIC with pinned TLS
+app/                  Flutter app: the PC window and the phone app
 packaging/systemd/    systemd user unit
+packaging/icons/      app icon (scripts/make-icon.py)
 ```
 
 ## Status vs. SPEC
