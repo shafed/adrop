@@ -1,6 +1,7 @@
 package com.adrop.app
 
 import android.Manifest
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -231,7 +232,11 @@ class MainActivity : FlutterActivity() {
             setDataAndType(uri, contentResolver.getType(uri))
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        startActivity(Intent.createChooser(view, null).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        try {
+            startActivity(view)
+        } catch (e: ActivityNotFoundException) {
+            startActivity(Intent.createChooser(view, null).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }
     }
 }
 

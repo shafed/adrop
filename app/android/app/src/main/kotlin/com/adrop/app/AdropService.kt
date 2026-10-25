@@ -11,6 +11,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.Uri
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Build
@@ -18,6 +19,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.provider.MediaStore
+import android.webkit.MimeTypeMap
 import android.util.Log
 import com.adrop.core.Platform
 import org.json.JSONObject
@@ -47,6 +49,7 @@ class AdropService : Service(), Platform {
     }
 
     private val main = Handler(Looper.getMainLooper())
+    private val received = mutableListOf<String>()
     private val io = Executors.newSingleThreadExecutor()
     private lateinit var nsd: NsdManager
     private var registration: NsdManager.RegistrationListener? = null
@@ -107,11 +110,19 @@ class AdropService : Service(), Platform {
         when (e.optString("kind")) {
             "recv-file-done" -> {
                 val moved = toDownloads(e.optString("path"))
-                if (moved != null) e.put("path", moved)
+                if (moved != null) {
+                    e.put("path", moved)
+                    synchronized(received) { received.add(moved) }
+                }
             }
             "recv-done" -> {
-                val what = if (e.optString("file") == "clipboard") "Clipboard" else "${e.optInt("count")} file(s)"
-                notify("$what from ${e.optString("peer")}", "Received", null)
+                val clip = e.optString("file") == "clipboard"
+                val what = if (clip) "Clipboard" else "${e.optInt("count")} file(s)"
+                val uris = synchronized(received) { received.toList().also { received.clear() } }
+                // One received file opens in its default app on tap, as it did
+                // in the app this replaces; anything else opens adrop.
+                val view = if (!clip && e.optInt("count") == 1) uris.singleOrNull()?.let(::viewIntent) else null
+                notify("$what from ${e.optString("peer")}", "Received", view)
             }
             "pair-request" -> {
                 val p = e.optJSONObject("pair")
@@ -121,6 +132,19 @@ class AdropService : Service(), Platform {
             }
         }
         Core.emit(e.toString())
+    }
+
+    private fun viewIntent(uri: String): Intent? {
+        val u = Uri.parse(uri)
+        val ext = MimeTypeMap.getFileExtensionFromUrl(uri).lowercase()
+        val mime = contentResolver.getType(u)
+            ?: MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
+            ?: "application/octet-stream"
+        val view = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(u, mime)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        return view.takeIf { it.resolveActivity(packageManager) != null }
     }
 
     private fun notify(title: String, text: String, intent: Intent?) {
