@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"git.quad4.io/Networks/Reticulum-Go/pkg/transport"
 )
 
 // fakeHub listens on localhost; closeNow makes it hang up right away (a
@@ -115,5 +117,15 @@ func TestParseCatalogKeepsOnlineClearnetTCP(t *testing.T) {
 	}
 	if !slices.Equal(got, []string{"a.example:4242", "b.example:4343"}) {
 		t.Fatalf("got %v", got)
+	}
+}
+
+// A peer drops its path to this device PathRequestTTL after the last
+// announce and cannot get it back by asking, so the default period must
+// leave room for one lost announce.
+func TestAnnounceEveryKeepsPeersPath(t *testing.T) {
+	ttl := time.Duration(transport.PathRequestTTL) * time.Second
+	if every := (HubPolicy{}).withDefaults().AnnounceEvery; 2*every >= ttl {
+		t.Fatalf("announce every %v: a single lost announce lets the path expire after %v", every, ttl)
 	}
 }

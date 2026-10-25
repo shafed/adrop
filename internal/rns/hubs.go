@@ -43,7 +43,7 @@ type HubPolicy struct {
 	ConnectGrace  time.Duration // time a new hub has to come up (20 s)
 	Silence       time.Duration // a hub that sends nothing this long is bad (90 s)
 	Backoff       time.Duration // a bad hub is not retried for this long (30 min)
-	AnnounceEvery time.Duration // re-announce period (10 min)
+	AnnounceEvery time.Duration // re-announce period (2 min)
 }
 
 func (p HubPolicy) withDefaults() HubPolicy {
@@ -59,7 +59,12 @@ func (p HubPolicy) withDefaults() HubPolicy {
 	def(&p.ConnectGrace, 20*time.Second)
 	def(&p.Silence, 90*time.Second)
 	def(&p.Backoff, 30*time.Minute)
-	def(&p.AnnounceEvery, 10*time.Minute)
+	// A peer forgets the path to this device PathRequestTTL (5 min) after
+	// the last announce it took, and a path request cannot bring it back:
+	// the hub answers with the same cached announce, which the transport
+	// drops as a duplicate for SeenAnnounceTTL (an hour). Announcing well
+	// within the TTL keeps the path alive even when one announce is lost.
+	def(&p.AnnounceEvery, 2*time.Minute)
 	return p
 }
 
