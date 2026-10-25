@@ -1,13 +1,14 @@
 {
   "$comment": "Состояние текущей работы по PLAN.md. Правится на границе этапа, не на каждом коммите. Результат ворот — заметки refs/notes/gate (пишет scripts/verify.sh).",
   "updated": "2026-10-25",
-  "stage": "Шаги 2–3 PLAN.md сделаны в Go (выключены по умолчанию); дальше шаги 4–6",
+  "stage": "Шаги 1–6 PLAN.md: код написан; проверка на устройствах — за владельцем",
   "stage_status": "code_done_device_checks_pending",
   "verification_command": "bash scripts/verify.sh",
   "verification_notes": [
-    "Ворота: go vet, gofmt, vet с тегом gui, сборка без cgo, go test -race. Android не входит; --android добавляет testDebugUnitTest (нужны JAVA_HOME и ANDROID_HOME).",
-    "Заметка ворот пишется только на чистом дереве и не в CI."
+    "Ворота: go vet, gofmt, сборка без cgo, go test -race; --app добавляет flutter analyze (FLUTTER=путь).",
+    "Тесты против Reticulum берут rnsd (ADROP_RNSD или PATH), без него пропускаются; живые — ADROP_LIVE_HUB, ADROP_LIVE_HUBS, ADROP_LIVE_STUN.",
+    "Заметка ворот пишется только на чистом дереве и не в CI. В конвейере с tail нужен pipefail, иначе push уходит при RED."
   ],
-  "next_action": "Шаги 4–6: foreground-сервис, Flutter UI на Linux и Android вместо Fyne и Kotlin, Windows. Проверки шагов 2–3 на устройствах — за владельцем (см. «Не проверено вживую» в STATUS.md).",
+  "next_action": "Владелец: проверить на устройствах по разделу «Не проверено вживую» в STATUS.md (новое приложение com.adrop — сначала удалить старое; на ПК make install app-install и перезапуск adrop). После проверки — отдельные коммиты включения по умолчанию: ADROP_TAP_PAIR, ADROP_RNS, настройки телефона.",
   "blockers": []
 }
