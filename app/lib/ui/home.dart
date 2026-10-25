@@ -267,7 +267,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     return true;
   }
 
-  /// Ctrl+V: a file path (or file:// URI) on the clipboard is sent at once.
+  /// Ctrl+V: a file path (or file:// URI) on the clipboard is sent at once;
+  /// on the PC, any other clipboard content is sent as the clipboard.
   Future<void> _pastePaths() async {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     final paths = <String>[];
@@ -286,22 +287,35 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       }
     }
     if (paths.isEmpty) {
-      _toast('No file path on the clipboard');
+      if (b.canSendOwnClipboard) {
+        _sendClipboard();
+      } else {
+        _toast('No file path on the clipboard');
+      }
       return;
     }
     _stage(paths);
   }
 
-  Future<void> _sendText() async {
+  Future<void> _sendText() => _sendTextOrClipboard(_text.text);
+
+  /// Sends this PC's clipboard, as the "Send clipboard" button does with an
+  /// empty text field.
+  Future<void> _sendClipboard() => _sendTextOrClipboard('');
+
+  Future<void> _sendTextOrClipboard(String text) async {
     final target = _target;
-    if (target == null) return;
+    if (target == null) {
+      _toast('No device selected');
+      return;
+    }
     try {
       final how = await b.sendText(
         target,
-        b.canSendOwnClipboard && _text.text.isEmpty ? null : _text.text,
+        b.canSendOwnClipboard && text.isEmpty ? null : text,
       );
       _toast(how);
-      _text.clear();
+      if (text.isNotEmpty) _text.clear();
       _refresh();
     } catch (e) {
       _toast('$e');
@@ -547,7 +561,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           ),
           borderRadius: BorderRadius.circular(12),
         ),
-        child: const Text('Drop files here · Ctrl+V sends a copied path'),
+        child: const Text('Drop files here · Ctrl+V sends a copied path or the clipboard'),
       ),
     ),
   );
