@@ -167,6 +167,8 @@ func New(opt Options) (*Daemon, error) {
 	d.rnsEnabled, d.rnsHubs = opt.Reticulum, opt.RNSHubs
 	d.pongs = make(map[string]chan struct{})
 	d.iceSetups = make(map[string]chan direct.Msg)
+	d.queueKick = make(chan struct{}, 1)
+	d.clips = make(map[string]*clipParts)
 	if d.clipboardSet == nil {
 		d.clipboardSet = clipboard.Copy
 	}

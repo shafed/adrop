@@ -342,3 +342,18 @@ func runPing(args []string) error {
 	}
 	return roundtrip(ipc.Request{Cmd: ipc.CmdPing, Target: args[0]}, printLines)
 }
+
+func runQueue(args []string) error {
+	if len(args) == 2 && args[0] == "rm" {
+		return roundtrip(ipc.Request{Cmd: ipc.CmdUnqueue, ID: args[1]}, printLines)
+	}
+	return roundtrip(ipc.Request{Cmd: ipc.CmdQueue}, func(r ipc.Response) {
+		if len(r.Queue) == 0 {
+			fmt.Println("nothing is waiting")
+			return
+		}
+		for _, q := range r.Queue {
+			fmt.Printf("%s  %s to %s, queued %s, %d tries\n  %s\n", q.ID, q.What, q.Peer, q.Added, q.Tries, q.Reason)
+		}
+	})
+}

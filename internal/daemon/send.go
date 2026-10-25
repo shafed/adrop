@@ -166,7 +166,7 @@ func (d *Daemon) dialPeer(ctx context.Context, target string, folders ...bool) (
 		}
 		if err != nil {
 			d.logger.Printf("dial %s at %s failed: %v", dev.Name, dev.Addr, err)
-			return nil, dev, dialFailure(dev, err, seenOnLAN, wake)
+			return nil, dev, &unreachableError{dev: dev, err: dialFailure(dev, err, seenOnLAN, wake)}
 		}
 	}
 	if fp != dev.Fingerprint {

@@ -34,9 +34,10 @@ const (
 	appName = "adrop"
 	aspect  = "signal"
 
-	// MaxMessage bounds one signed message: a single Reticulum packet. The
-	// envelope, signature and encryption overhead leave this much for the body.
-	MaxMessage = 300
+	// MaxMessage bounds one signed message: a single encrypted Reticulum
+	// packet (packet.EncryptedMDU) minus the envelope (public key, time,
+	// signature). A longer packet is dropped on the way, not refused.
+	MaxMessage = packet.EncryptedMDU - pubLen - 8 - sigLen
 
 	// maxAge rejects replayed messages.
 	maxAge = 5 * time.Minute

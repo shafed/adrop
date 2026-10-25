@@ -60,3 +60,13 @@ func isTimeout(err error) bool {
 	var ne net.Error
 	return errors.As(err, &ne) && ne.Timeout()
 }
+
+// unreachableError is a send that never reached the peer: nothing was
+// transferred, so it can wait in the queue (queue.go) and be retried whole.
+type unreachableError struct {
+	dev config.Device
+	err error
+}
+
+func (e *unreachableError) Error() string { return e.err.Error() }
+func (e *unreachableError) Unwrap() error { return e.err }

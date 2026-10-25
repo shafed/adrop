@@ -9,6 +9,7 @@
 //	adrop pair accept                 answer a pairing started on another device
 //	adrop nearby                      list adrop devices seen on the LAN
 //	adrop ping <peer>                 signed ping to a paired device over Reticulum
+//	adrop queue [rm <id>]             sends waiting for a channel to their device
 //	adrop devices                     list trusted devices
 //	adrop revoke <name|fp>            remove a trusted device
 //	adrop send [<peer>] <files...>    send files (peer optional, uses last-used)
@@ -59,6 +60,8 @@ func main() {
 		err = runNearby(args)
 	case "ping":
 		err = runPing(args)
+	case "queue":
+		err = runQueue(args)
 	case "revoke":
 		err = runRevoke(args)
 	case "send":
@@ -97,6 +100,7 @@ Usage:
   adrop pair accept             answer a pairing started on another device
   adrop nearby                  list adrop devices seen on the LAN
   adrop ping <peer>             ping a paired device over Reticulum hubs (outside the LAN)
+  adrop queue [rm <id>]         list (or drop) sends waiting for a channel to their device
   adrop devices                 list trusted devices
   adrop revoke <name|fp-prefix> revoke (untrust) a device
   adrop send [<peer>] <file...>  send files to a peer (peer optional after first send)

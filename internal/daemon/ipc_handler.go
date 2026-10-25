@@ -112,8 +112,13 @@ func (d *Daemon) handleIPC(ctx context.Context, conn net.Conn) {
 		}
 		ctx, cancel := cancelOnDisconnect(ctx, conn)
 		defer cancel()
-		if err := d.SendFiles(ctx, target, req.Files, progress); err != nil {
+		reason, err := d.SendFilesOrQueue(ctx, target, req.Files, progress)
+		if err != nil {
 			send(ipc.Response{Err: err.Error(), Done: true})
+			return
+		}
+		if reason != "" {
+			send(ipc.Response{Line: "queued: " + reason, Done: true})
 			return
 		}
 		send(ipc.Response{Done: true})
@@ -138,11 +143,12 @@ func (d *Daemon) handleIPC(ctx context.Context, conn net.Conn) {
 		}
 		ctx, cancel := cancelOnDisconnect(ctx, conn)
 		defer cancel()
-		if err := d.SendClipboard(ctx, target, data, mime); err != nil {
+		how, err := d.SendClipboardAnywhere(ctx, target, data, mime)
+		if err != nil {
 			send(ipc.Response{Err: err.Error(), Done: true})
 			return
 		}
-		send(ipc.Response{Line: "clipboard sent", Done: true})
+		send(ipc.Response{Line: how, Done: true})
 
 	case ipc.CmdNearby:
 		send(ipc.Response{Nearby: d.Nearby(), Done: true})
@@ -189,6 +195,16 @@ func (d *Daemon) handleIPC(ctx context.Context, conn net.Conn) {
 			return
 		}
 		send(ipc.Response{Line: "pong from " + req.Target + " over reticulum in " + rtt.Round(time.Millisecond).String(), Done: true})
+
+	case ipc.CmdQueue:
+		send(ipc.Response{Queue: d.Queue(), Done: true})
+
+	case ipc.CmdUnqueue:
+		if err := d.Unqueue(req.ID); err != nil {
+			send(ipc.Response{Err: err.Error(), Done: true})
+			return
+		}
+		send(ipc.Response{Line: "dropped", Done: true})
 
 	case ipc.CmdSubscribe:
 		d.streamEvents(ctx, conn, send)

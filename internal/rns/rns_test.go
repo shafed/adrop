@@ -133,3 +133,28 @@ func TestAddressOfMatchesNode(t *testing.T) {
 		t.Fatalf("AddressOf %x, node listens on %s", addr, n.Address())
 	}
 }
+
+func TestLargestMessageFitsOnePacket(t *testing.T) {
+	hub := startHub(t)
+	var a *Node
+	b := openNode(t, hub, func(pub []byte) bool { return bytes.Equal(pub, a.PublicKey()) })
+	a = openNode(t, hub, nil)
+	b.Announce()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	body := bytes.Repeat([]byte{0x7e}, MaxMessage) // HDLC flag bytes, escaped on the wire
+	if err := a.Send(ctx, b.PublicKey(), body); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Send(ctx, b.PublicKey(), append(body, 0)); err == nil {
+		t.Fatal("a message over MaxMessage was accepted")
+	}
+	select {
+	case m := <-b.Inbox():
+		if !bytes.Equal(m.Body, body) {
+			t.Fatalf("got %d bytes", len(m.Body))
+		}
+	case <-ctx.Done():
+		t.Fatalf("a %d-byte message never arrived", MaxMessage)
+	}
+}

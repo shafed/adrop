@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,5 +96,60 @@ func TestSendFallsBackToDirectChannel(t *testing.T) {
 	got, err := os.ReadFile(filepath.Join(b.download, "far.txt"))
 	if err != nil || string(got) != "sent over a direct channel" {
 		t.Fatalf("received %q: %v", got, err)
+	}
+}
+
+func TestWithoutDirectChannelClipboardGoesThroughHubsAndFilesWait(t *testing.T) {
+	hub := startRnsd(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	withRNS := func(o *Options) { o.Reticulum, o.RNSHubs = true, []string{hub} }
+	a := newTestDaemonWith(t, ctx, "a", withRNS)
+	b := newTestDaemonWith(t, ctx, "b", withRNS)
+	for _, td := range []*testDaemon{a, b} {
+		// Both behind strict NATs: no direct channel comes up.
+		td.d.directOpt = direct.Options{STUN: []string{}, Timeout: time.Nanosecond}
+		td.d.startRNS(ctx)
+	}
+	pair(t, a, b)
+	realAddr, _ := a.store.Lookup("b")
+	a.store.UpdateAddr(b.store.Fingerprint(), "192.0.2.1:9")
+
+	sctx, scancel := context.WithTimeout(ctx, 90*time.Second)
+	defer scancel()
+	text := []byte(strings.Repeat("через хабы ", 40)) // several packets
+	how, err := a.d.SendClipboardAnywhere(sctx, "b", text, "text/plain")
+	if err != nil || !strings.Contains(how, "hubs") {
+		t.Fatalf("clipboard: %q, %v", how, err)
+	}
+	b.clipMu.Lock()
+	got := string(b.clip)
+	b.clipMu.Unlock()
+	if got != string(text) {
+		t.Fatalf("b's clipboard is %q", got)
+	}
+
+	src := filepath.Join(t.TempDir(), "later.txt")
+	os.WriteFile(src, []byte("waited for a channel"), 0o644)
+	reason, err := a.d.SendFilesOrQueue(sctx, "b", []string{src}, func(string) {})
+	if err != nil || reason == "" {
+		t.Fatalf("file was not queued: %q, %v", reason, err)
+	}
+	if q := a.d.Queue(); len(q) != 1 || q[0].Reason == "" {
+		t.Fatalf("queue: %+v", q)
+	}
+
+	// One of them comes onto a network the other can reach.
+	a.store.UpdateAddr(b.store.Fingerprint(), realAddr.Addr)
+	a.d.kickQueue()
+	deadline := time.Now().Add(30 * time.Second)
+	for len(a.d.Queue()) > 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("queue never drained: %+v", a.d.Queue())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if got, err := os.ReadFile(filepath.Join(b.download, "later.txt")); err != nil || string(got) != "waited for a channel" {
+		t.Fatalf("queued file: %q %v", got, err)
 	}
 }

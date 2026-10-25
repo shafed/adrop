@@ -26,6 +26,11 @@ type signal struct {
 	Ufrag string `json:"u,omitempty"` // ice-offer, ice-answer
 	Pwd   string `json:"p,omitempty"`
 	Cand  string `json:"c,omitempty"` // ice-cand
+
+	// clip: part N (from 0) of Of of a clipboard text, Data in base64.
+	N    int    `json:"n,omitempty"`
+	Of   int    `json:"of,omitempty"`
+	Data string `json:"d,omitempty"`
 }
 
 // startRNS opens the Reticulum endpoint and the hub manager. Failures are
@@ -58,6 +63,7 @@ func (d *Daemon) startRNS(ctx context.Context) {
 	d.logger.Printf("rns: address %s", node.Address())
 	go m.Run(ctx)
 	go d.rnsInbox(ctx, node)
+	go d.runQueue(ctx)
 }
 
 func (d *Daemon) rnsState() (*rns.Node, *rns.HubManager) {
@@ -165,6 +171,8 @@ func (d *Daemon) rnsInbox(ctx context.Context, node *rns.Node) {
 			if s.Type == "ping" || s.Type == "pong" || s.Type == "ice-offer" {
 				d.logger.Printf("rns: %s from %s", s.Type, dev.Name)
 			}
+			// Any signal means the device is online: queued sends may go now.
+			d.kickQueue()
 			switch s.Type {
 			case "ping":
 				go func() {
@@ -181,6 +189,15 @@ func (d *Daemon) rnsInbox(ctx context.Context, node *rns.Node) {
 				case d.iceInbox(s.ID) <- direct.Msg{Kind: s.Type[len("ice-"):], Ufrag: s.Ufrag, Pwd: s.Pwd, Cand: s.Cand}:
 				default:
 				}
+			case "clip":
+				d.receiveClipPart(ctx, dev, s)
+			case "clip-ack":
+				d.pongMu.Lock()
+				if ch, ok := d.pongs[s.ID]; ok {
+					close(ch)
+					delete(d.pongs, s.ID)
+				}
+				d.pongMu.Unlock()
 			case "pong":
 				d.pongMu.Lock()
 				if ch, ok := d.pongs[s.ID]; ok {
@@ -211,4 +228,11 @@ type rnsFields struct {
 	iceMu     sync.Mutex
 	iceSetups map[string]chan direct.Msg
 	directOpt direct.Options
+
+	// The queue of sends waiting for a channel (queue.go) and clipboard
+	// texts arriving through the hubs in parts.
+	queueMu   sync.Mutex
+	queueKick chan struct{}
+	clipMu    sync.Mutex
+	clips     map[string]*clipParts
 }

@@ -42,6 +42,8 @@ const (
 	CmdPairPending Command = "pair-pending" // tap pairings waiting for an answer
 	CmdPairConfirm Command = "pair-confirm" // answer a tap pairing; waits for its outcome
 	CmdPing        Command = "ping"         // signed ping to a paired device over Reticulum
+	CmdQueue       Command = "queue"        // sends waiting for a channel
+	CmdUnqueue     Command = "unqueue"      // drop a waiting send (ID)
 )
 
 // Event is a daemon->GUI push on a CmdSubscribe stream. Each Response on that
@@ -110,6 +112,9 @@ type Response struct {
 	// Pending lists tap pairings waiting for an answer (pair-pending).
 	Pending []PairInfo `json:"pending,omitempty"`
 
+	// Queue lists sends waiting for a channel (queue).
+	Queue []QueueItem `json:"queue,omitempty"`
+
 	// Nearby lists adrop devices seen on the LAN (nearby).
 	Nearby []NearbyInfo `json:"nearby,omitempty"`
 
@@ -153,4 +158,15 @@ type NearbyInfo struct {
 	Addr        string `json:"addr"`
 	Fingerprint string `json:"fingerprint"`
 	Paired      bool   `json:"paired"`
+}
+
+// QueueItem is a send waiting for a channel to its device, and why.
+type QueueItem struct {
+	ID     string   `json:"id"`
+	Peer   string   `json:"peer"`
+	What   string   `json:"what"`
+	Paths  []string `json:"paths,omitempty"`
+	Added  string   `json:"added"`
+	Reason string   `json:"reason"`
+	Tries  int      `json:"tries"`
 }
