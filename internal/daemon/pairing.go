@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"sync"
@@ -187,4 +188,15 @@ func (d *Daemon) pairWindowDone() (<-chan struct{}, *pairSession) {
 		return nil, nil
 	}
 	return d.pairWindow.done, d.pairWindow
+}
+
+// Hello dials a trusted peer, exchanges Hello and hangs up. It is the smallest
+// round trip a UI can make through the embedded core (package core).
+func (d *Daemon) Hello(ctx context.Context, target string) (config.Device, error) {
+	conn, dev, err := d.dialPeer(ctx, target)
+	if err != nil {
+		return dev, err
+	}
+	conn.Close()
+	return dev, nil
 }

@@ -67,6 +67,7 @@ func (d *Daemon) handlePeer(ctx context.Context, raw net.Conn) {
 		d.logger.Printf("peer: rejecting untrusted %s", fp[:16])
 		return
 	}
+	d.logger.Printf("hello from %s (%s)", hello.Name, fp)
 	// Self-heal the last-known address from this connection: trust the peer's
 	// advertised listen port, substituting the live source IP when the peer
 	// didn't name a concrete host. This corrects a stale/wrong stored port
@@ -83,6 +84,10 @@ func (d *Daemon) handlePeer(ctx context.Context, raw net.Conn) {
 // receiveSession reads one session (files or clipboard) and sends acks.
 func (d *Daemon) receiveSession(ctx context.Context, conn *tls.Conn, peerName string) error {
 	start, err := proto.ReadHeader(conn)
+	if err == io.EOF {
+		// A Hello-only connection (pairing back-connect, Daemon.Hello) ends here.
+		return nil
+	}
 	if err != nil {
 		return err
 	}
