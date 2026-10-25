@@ -9,62 +9,54 @@ and OUTDIR/linux/*.png, icon-512.png into packaging/icons/.
 import math
 import os
 import sys
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 OUT = sys.argv[1] if len(sys.argv) > 1 else "icon-out"
 
-BG = "#2B3A8F"      # indigo background
-DROP = "#FFFFFF"    # white drop
-ACCENT = "#FF8A3D"  # orange arrow
+BG_TOP = (18, 150, 163)   # teal, lit from above
+BG_BOT = (0, 82, 94)      # deep teal, as the very first adrop icon
+INK = (255, 255, 255)
 
 SS = 4096  # supersampled canvas
+W = SS * 0.088  # stroke width
+
+
+def stroke(d, pts, fill, w=W):
+    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+        d.line([(x0, y0), (x1, y1)], fill=fill, width=int(w))
+    for x, y in pts:
+        d.ellipse([x - w / 2, y - w / 2, x + w / 2, y + w / 2], fill=fill)
+
+
+def glyph(d, fill):
+    """A download arrow dropping into a tray: a file arriving on the device."""
+    s = SS
+    P = lambda x, y: (x * s, y * s)
+    stroke(d, [P(0.5, 0.22), P(0.5, 0.58)], fill)
+    stroke(d, [P(0.34, 0.43), P(0.5, 0.60), P(0.66, 0.43)], fill)
+    stroke(d, [P(0.27, 0.64), P(0.27, 0.76), P(0.73, 0.76), P(0.73, 0.64)], fill)
 
 
 def master():
     s = SS
+    bg = Image.new("RGBA", (s, s))
+    bd = ImageDraw.Draw(bg)
+    for y in range(s):
+        t = y / (s - 1)
+        bd.line([(0, y), (s, y)], fill=tuple(int(BG_TOP[i] + (BG_BOT[i] - BG_TOP[i]) * t) for i in range(3)) + (255,))
+    mask = Image.new("L", (s, s), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, s - 1, s - 1], radius=int(s * 0.22), fill=255)
     img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    # full-bleed rounded square
-    d.rounded_rectangle([0, 0, s - 1, s - 1], radius=int(s * 0.22), fill=BG)
+    img.paste(bg, (0, 0), mask)
 
-    # teardrop: circle of radius r, tip above at distance k*r from centre
-    r = s * 0.25
-    k = 1.7
-    total_h = r + k * r
-    cx = s / 2
-    top = (s - total_h) / 2
-    tip = (cx, top)
-    cy = top + k * r
-    alpha = math.acos(1 / k)  # tangent angle measured from the up direction
-    pts = [tip]
-    n = 720
-    # walk around the circle from right tangent point, under the bottom, to left
-    start = -math.pi / 2 + alpha  # screen angle (y down): -pi/2 is straight up
-    end = -math.pi / 2 - alpha + 2 * math.pi
-    for i in range(n + 1):
-        a = start + (end - start) * i / n
-        pts.append((cx + r * math.cos(a), cy + r * math.sin(a)))
-    d.polygon(pts, fill=DROP)
-
-    # two opposing arrows (exchange between own devices) inside the round part
-    t = r * 0.28            # shaft thickness
-    hw = r * 0.68           # arrow-head width (perpendicular)
-    hl = r * 0.44           # arrow-head length
-    half = r * 0.64         # half length of each arrow
-    gap = r * 0.34          # vertical offset of each arrow from circle centre
-    ac = cy + r * 0.04
-
-    def arrow(y, direction):
-        x0, x1 = cx - half, cx + half
-        if direction > 0:   # points right
-            d.rectangle([x0, y - t / 2, x1 - hl + 1, y + t / 2], fill=ACCENT)
-            d.polygon([(x1 - hl, y - hw / 2), (x1, y), (x1 - hl, y + hw / 2)], fill=ACCENT)
-        else:               # points left
-            d.rectangle([x0 + hl - 1, y - t / 2, x1, y + t / 2], fill=ACCENT)
-            d.polygon([(x0 + hl, y - hw / 2), (x0, y), (x0 + hl, y + hw / 2)], fill=ACCENT)
-
-    arrow(ac - gap, +1)
-    arrow(ac + gap, -1)
+    # soft shadow under the glyph
+    sh = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    glyph(ImageDraw.Draw(sh), (0, 40, 48, 110))
+    sh = sh.filter(ImageFilter.GaussianBlur(s * 0.012))
+    off = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    off.paste(sh, (0, int(s * 0.012)))
+    img = Image.alpha_composite(img, off)
+    glyph(ImageDraw.Draw(img), INK + (255,))
     return img
 
 
@@ -111,12 +103,10 @@ def main():
 
 
 def notification(img):
-    """Android's status-bar icon: the drop as a white silhouette (the system
-    uses only the alpha channel), arrows cut out."""
-    r, g, b, a = img.split()
-    drop = Image.eval(Image.merge("RGB", (r, g, b)).convert("L"), lambda v: 255 if v > 200 else 0)
-    sil = Image.new("RGBA", img.size, (255, 255, 255, 0))
-    sil.putalpha(drop)
+    """Android's status-bar icon: the glyph as a white silhouette (the system
+    uses only the alpha channel)."""
+    sil = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    glyph(ImageDraw.Draw(sil), (255, 255, 255, 255))
     for name, sz in [("mdpi", 24), ("hdpi", 36), ("xhdpi", 48), ("xxhdpi", 72), ("xxxhdpi", 96)]:
         save(sil, sz, f"android/drawable-{name}/ic_notification.png")
 
