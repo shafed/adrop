@@ -122,4 +122,3 @@ func Dial() (net.Conn, error) {
 	}
 	return conn, nil
 }
-
