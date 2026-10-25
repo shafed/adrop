@@ -57,10 +57,20 @@ func (n *Node) Fingerprint() string { return n.store.Fingerprint() }
 
 // Pair trusts the device behind a scanned "adrop://pair?d=..." URI and
 // connects back so it pins this device too. It returns the peer's name.
+//
+// AddPeer treats the back-connect as best effort; here a Hello must pass, or
+// the peer is dropped again: a peer that never pinned this device answers
+// every later Hello with "tls: bad certificate".
 func (n *Node) Pair(uri string) (string, error) {
 	dev, err := n.d.AddPeer(strings.TrimSpace(uri))
 	if err != nil {
 		return "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), helloTimeout)
+	defer cancel()
+	if _, err := n.d.Hello(ctx, dev.Fingerprint); err != nil {
+		n.store.RemoveDevice(dev.Fingerprint)
+		return "", fmt.Errorf("%s did not accept this device (is `adrop pair show` still waiting there?): %w", dev.Name, err)
 	}
 	return dev.Name, nil
 }

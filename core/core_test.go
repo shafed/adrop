@@ -3,6 +3,9 @@ package core
 import (
 	"strings"
 	"testing"
+
+	"github.com/shafed/adrop/internal/config"
+	"github.com/shafed/adrop/internal/pairing"
 )
 
 func TestStartKeepsIdentity(t *testing.T) {
@@ -34,5 +37,31 @@ func TestPairAndHelloRejectBadInput(t *testing.T) {
 	_, err = n.Hello("pc")
 	if err == nil || !strings.Contains(err.Error(), "no trusted device") {
 		t.Fatalf("hello to an unpaired peer: %v", err)
+	}
+}
+
+func TestPairDropsPeerThatDidNotAccept(t *testing.T) {
+	pc, err := config.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("pc store: %v", err)
+	}
+	uri, err := pairing.Encode(pairing.Payload{
+		Name:        "pc",
+		Fingerprint: pc.Fingerprint(),
+		CertPEM:     string(pc.CertPEM()),
+		Addr:        "127.0.0.1:1",
+	})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	n, err := Start(t.TempDir(), "proto")
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if _, err := n.Pair(uri); err == nil {
+		t.Fatal("pair succeeded although the peer never answered")
+	}
+	if n.Peers() != "" {
+		t.Fatalf("an unconfirmed peer stayed trusted: %q", n.Peers())
 	}
 }
