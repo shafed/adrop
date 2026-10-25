@@ -1,3 +1,5 @@
+//go:build !windows && !zeroconf
+
 // Package mdns advertises and discovers the _adrop._tcp DNS-SD service using
 // the avahi CLI tools (avahi-publish-service and avahi-browse from avahi-utils).
 //

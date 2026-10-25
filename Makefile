@@ -10,7 +10,7 @@ APPS_DIR := $(HOME)/.local/share/applications
 
 .PHONY: all build build-daemon build-relay test vet race install relay-install \
         relay-uninstall uninstall clean dolphin-install dolphin-uninstall \
-        core-android app-linux app-android app-install app-uninstall
+        core-android app-linux app-android app-install app-uninstall windows
 
 APP_DIR := $(HOME)/.local/lib/adrop-gui
 ICON_DIR := $(HOME)/.local/share/icons/hicolor
@@ -48,6 +48,12 @@ install: build
 	@echo "Installed. Enable with:"
 	@echo "  systemctl --user daemon-reload"
 	@echo "  systemctl --user enable --now adrop"
+
+# Windows: the CLI, and the daemon built without a console window (for
+# `adrop autostart on`). The window is `flutter build windows` on Windows.
+windows:
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o dist/windows/adrop.exe ./cmd/adrop
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags=-H=windowsgui -o dist/windows/adrop-daemon.exe ./cmd/adrop
 
 # The Android app embeds the Go core (core/) through gomobile.
 core-android:

@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"syscall"
 )
 
@@ -58,6 +59,8 @@ func main() {
 		err = runPing(args)
 	case "queue":
 		err = runQueue(args)
+	case "autostart":
+		err = runAutostart(args)
 	case "revoke":
 		err = runRevoke(args)
 	case "send":
@@ -93,6 +96,7 @@ Usage:
   adrop nearby                  list adrop devices seen on the LAN
   adrop ping <peer>             ping a paired device over Reticulum hubs (outside the LAN)
   adrop queue [rm <id>]         list (or drop) sends waiting for a channel to their device
+  adrop autostart on|off        start the daemon at login (Windows; Linux uses systemd)
   adrop devices                 list trusted devices
   adrop revoke <name|fp-prefix> revoke (untrust) a device
   adrop send [<peer>] <file...>  send files to a peer (peer optional after first send)
@@ -114,21 +118,29 @@ Environment:
 // openWindow replaces this process with adrop-gui, found next to this binary
 // or on PATH.
 func openWindow() error {
-	if os.Getenv("WAYLAND_DISPLAY") == "" && os.Getenv("DISPLAY") == "" {
+	windows := runtime.GOOS == "windows"
+	if !windows && os.Getenv("WAYLAND_DISPLAY") == "" && os.Getenv("DISPLAY") == "" {
 		return errors.New("no display (DISPLAY/WAYLAND_DISPLAY unset), no window to open")
+	}
+	name := "adrop-gui"
+	if windows {
+		name += ".exe"
 	}
 	gui := ""
 	if self, err := os.Executable(); err == nil {
-		if p := filepath.Join(filepath.Dir(self), "adrop-gui"); fileExists(p) {
+		if p := filepath.Join(filepath.Dir(self), name); fileExists(p) {
 			gui = p
 		}
 	}
 	if gui == "" {
-		p, err := exec.LookPath("adrop-gui")
+		p, err := exec.LookPath(name)
 		if err != nil {
 			return errors.New("the window is not installed (make app-install)")
 		}
 		gui = p
+	}
+	if windows {
+		return exec.Command(gui).Start() // no exec(2) on Windows
 	}
 	return syscall.Exec(gui, []string{gui}, os.Environ())
 }

@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Package notify sends desktop notifications via notify-send (libnotify).
 //
 // Failures are non-fatal: a missing notify-send must never break a transfer,

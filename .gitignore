@@ -35,3 +35,4 @@ google-services.json
 
 # Kotlin incremental compile cache
 android/.kotlin/
+/dist/

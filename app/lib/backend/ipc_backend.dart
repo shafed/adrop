@@ -16,13 +16,33 @@ class IpcBackend implements Backend {
             : '/tmp/adrop.sock');
   }
 
+  /// Windows: the daemon listens on 127.0.0.1 and publishes the address and
+  /// a token in %AppData%\adrop\ipc.json (internal/ipc/conn_tcp.go); the
+  /// token goes first on every connection.
+  static String get endpointFile =>
+      Platform.environment['ADROP_IPC_FILE'] ??
+      '${Platform.environment['APPDATA']}\\adrop\\ipc.json';
+
   Future<Socket> _connect() async {
     try {
+      if (Platform.isWindows) {
+        final ep = jsonDecode(
+          await File(endpointFile).readAsString(),
+        ) as Map<String, dynamic>;
+        final addr = ep['addr'] as String;
+        final i = addr.lastIndexOf(':');
+        final s = await Socket.connect(
+          addr.substring(0, i),
+          int.parse(addr.substring(i + 1)),
+        );
+        s.write('${ep['token']}\n');
+        return s;
+      }
       return await Socket.connect(
         InternetAddress(socketPath, type: InternetAddressType.unix),
         0,
       );
-    } on SocketException {
+    } on IOException {
       throw BackendException('The adrop daemon is not running.');
     }
   }

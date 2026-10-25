@@ -7,22 +7,6 @@
 // Streaming lets long operations (file send) report progress.
 package ipc
 
-import (
-	"os"
-	"path/filepath"
-)
-
-// SocketPath returns the daemon's Unix socket path, honoring XDG_RUNTIME_DIR.
-func SocketPath() string {
-	if p := os.Getenv("ADROP_SOCKET"); p != "" {
-		return p
-	}
-	if r := os.Getenv("XDG_RUNTIME_DIR"); r != "" {
-		return filepath.Join(r, "adrop.sock")
-	}
-	return filepath.Join(os.TempDir(), "adrop.sock")
-}
-
 // Command names the CLI action.
 type Command string
 

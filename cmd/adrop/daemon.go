@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"io"
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -32,7 +35,7 @@ func runDaemon(args []string) error {
 		AdvertiseIP: os.Getenv("ADROP_ADVERTISE_IP"),
 		DownloadDir: os.Getenv("ADROP_DOWNLOAD_DIR"),
 		RelayAddr:   os.Getenv("ADROP_RELAY"),
-		Logger:      log.New(os.Stderr, "adrop: ", log.LstdFlags),
+		Logger:      log.New(logOutput(), "adrop: ", log.LstdFlags),
 		TapPair:     os.Getenv("ADROP_TAP_PAIR") == "1",
 		Reticulum:   os.Getenv("ADROP_RNS") == "1",
 		RNSHubs:     splitList(os.Getenv("ADROP_RNS_HUBS")),
@@ -58,4 +61,19 @@ func splitList(s string) []string {
 		}
 	}
 	return out
+}
+
+// logOutput is stderr (journald under systemd); on Windows the daemon runs
+// without a console, so it logs to daemon.log in its config directory.
+func logOutput() io.Writer {
+	if runtime.GOOS != "windows" {
+		return os.Stderr
+	}
+	path := filepath.Join(config.Dir(), "daemon.log")
+	os.MkdirAll(filepath.Dir(path), 0o700)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return os.Stderr
+	}
+	return f
 }

@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Package clipboard wraps the Wayland clipboard tools wl-copy / wl-paste.
 //
 // The SPEC targets Wayland (KDE/Sway/Hyprland) and specifies wl-clipboard for

@@ -16,12 +16,7 @@ import (
 
 // dialDaemon connects to the daemon's Unix socket.
 func dialDaemon() (net.Conn, error) {
-	path := ipc.SocketPath()
-	conn, err := net.Dial("unix", path)
-	if err != nil {
-		return nil, fmt.Errorf("cannot reach daemon at %s (is `adrop daemon` running?): %w", path, err)
-	}
-	return conn, nil
+	return ipc.Dial()
 }
 
 // roundtrip sends req and invokes onResp for each streamed response until Done.

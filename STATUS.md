@@ -111,6 +111,28 @@
   устройства. В очередь попадает только «не достучались»; отказ получателя
   из очереди убирается.
 
+## Windows (шаг 6)
+
+- `make windows` → `dist/windows/adrop.exe` (CLI) и `adrop-daemon.exe`
+  (без окна консоли, журнал — `%AppData%\adrop\daemon.log`). Конфиг —
+  `%AppData%\adrop`. Окно — `flutter build windows` в `app/` на Windows
+  (`adrop-gui.exe`); голый `adrop` его запускает.
+- Буфер обмена — PowerShell `Get-Clipboard`/`Set-Clipboard`, только текст;
+  уведомления — WinRT-тост через PowerShell под app id PowerShell;
+  автозапуск — `adrop autostart on|off`, ключ `HKCU\…\Run`.
+- mDNS без avahi — `grandcat/zeroconf` (чистый Go); на Linux остаётся
+  avahi, zeroconf собирается тегом `zeroconf` для теста.
+- IPC: Dart на Windows не умеет Unix-сокеты, поэтому демон слушает
+  `127.0.0.1:<порт>` и пишет адрес и случайный токен в
+  `%AppData%\adrop\ipc.json` (0600); первой строкой клиент шлёт токен, без
+  него соединение закрывается. На Linux — прежний сокет. Логика проверяется
+  на Linux тегом `ipctcp`.
+- Проверено под wine (отдельный префикс): демон, IPC с токеном, `status`,
+  сопряжение по коду с Linux-демоном, файлы в обе стороны, zeroconf видит
+  Linux-демон и наоборот. Не проверено: буфер обмена, уведомления,
+  автозапуск, окно Flutter под Windows (собирается только на Windows),
+  настоящий Windows.
+
 ## Не проверено вживую
 
 - Шаги 2–5 на реальных устройствах. Проверено: два демона на одной машине

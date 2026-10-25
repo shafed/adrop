@@ -23,6 +23,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -65,6 +66,11 @@ type Store struct {
 func Dir() string {
 	if d := os.Getenv("ADROP_CONFIG_DIR"); d != "" {
 		return d
+	}
+	if runtime.GOOS == "windows" {
+		if d, err := os.UserConfigDir(); err == nil {
+			return filepath.Join(d, "adrop") // %AppData%\adrop
+		}
 	}
 	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
 		return filepath.Join(x, "adrop")

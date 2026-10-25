@@ -63,13 +63,13 @@
 
 |                      |                                                                               |
 | -------------------- | ----------------------------------------------------------------------------- |
-| ПК ОС                | Linux (Arch); **Windows — в будущем**                                         |
+| ПК ОС                | Linux (Arch); Windows (шаг 6, не проверено на настоящем Windows)              |
 | ПК дисплей           | Wayland (KDE Plasma / Sway / Hyprland)                                        |
 | Ядро                 | **Go**                                                                        |
 | UI                   | **Flutter** (`app/`)                                                          |
-| Буфер обмена ПК      | Linux: `wl-clipboard` (`wl-copy` / `wl-paste`); Windows — решить при переносе |
-| Уведомления ПК       | Linux: libnotify / `notify-send`; Windows — решить при переносе               |
-| Автозапуск ПК        | Linux: systemd user; Windows — решить при переносе                            |
+| Буфер обмена ПК      | Linux: `wl-clipboard` (`wl-copy` / `wl-paste`); Windows: PowerShell           |
+| Уведомления ПК       | Linux: libnotify / `notify-send`; Windows: WinRT-тост через PowerShell        |
+| Автозапуск ПК        | Linux: systemd user; Windows: `adrop autostart on` (HKCU Run)                 |
 | Android приём файлов | MediaStore → общий каталог Downloads (без широких прав на хранилище)          |
 
 ---
@@ -289,5 +289,4 @@ Quad4-Software под Apache-2.0, `pion/ice`, `quic-go`).
 - Размер QR после добавления Reticulum identity (влезет ли в одну плотность,
   читаемую камерой).
 - Порог «мелких данных», которые можно слать через хабы.
-- Буфер обмена, уведомления и автозапуск на Windows.
 - FCM для телефон ↔ телефон, если foreground-сервис не подойдёт.

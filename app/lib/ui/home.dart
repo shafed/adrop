@@ -319,7 +319,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   Future<void> _startDaemon() async {
-    final r = await Process.run('systemctl', ['--user', 'start', 'adrop']);
+    final r = Platform.isWindows
+        ? await Process.run('adrop-daemon.exe', ['daemon'], runInShell: true)
+        : await Process.run('systemctl', ['--user', 'start', 'adrop']);
     if (r.exitCode != 0) _toast('systemctl: ${r.stderr}');
     await Future.delayed(const Duration(seconds: 1));
     _refresh();
@@ -489,7 +491,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (b is ChannelBackend) {
       await (b as ChannelBackend).open(path);
     } else {
-      await Process.run('xdg-open', [path]);
+      await Process.run(Platform.isWindows ? 'explorer' : 'xdg-open', [path]);
     }
   }
 

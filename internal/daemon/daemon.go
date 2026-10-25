@@ -248,19 +248,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	defer tlsLn.Close()
 
-	sockPath := ipc.SocketPath()
-	_ = os.Remove(sockPath) // clear a stale socket from a crashed run
-	ipcLn, err := net.Listen("unix", sockPath)
+	ipcLn, sockPath, closeIPC, err := ipc.Listen()
 	if err != nil {
 		return fmt.Errorf("ipc listen: %w", err)
 	}
-	if err := os.Chmod(sockPath, 0o600); err != nil {
-		d.logger.Printf("warning: chmod socket: %v", err)
-	}
-	defer func() {
-		ipcLn.Close()
-		os.Remove(sockPath)
-	}()
+	defer closeIPC()
 
 	d.logger.Printf("listening for peers on %s, IPC at %s", d.tcpAddr, sockPath)
 
