@@ -42,7 +42,14 @@ func (d *Daemon) handlePeer(ctx context.Context, raw net.Conn) {
 		d.handleTapPair(ctx, conn, fp)
 		return
 	}
+	d.servePeer(ctx, conn, fp, true)
+}
 
+// servePeer runs Hello and one session on a connection whose peer has proven
+// fingerprint fp: pinned TLS in the LAN, or QUIC over a direct channel
+// (lan=false, where the source address says nothing about the peer's LAN
+// address and is not stored).
+func (d *Daemon) servePeer(ctx context.Context, conn net.Conn, fp string, lan bool) {
 	// Hello exchange: read their hello, send ours.
 	hello, err := proto.ReadHeader(conn)
 	if err != nil || hello.Type != proto.TypeHello {
@@ -63,7 +70,7 @@ func (d *Daemon) handlePeer(ctx context.Context, raw net.Conn) {
 	}
 
 	// If a pairing window is open and this is the expected peer, finalize it.
-	if d.tryCompletePairing(fp, hello.Name, hello.Addr, conn.RemoteAddr()) {
+	if lan && d.tryCompletePairing(fp, hello.Name, hello.Addr, conn.RemoteAddr()) {
 		d.store.UpdateRNS(fp, hello.RNS)
 		d.logger.Printf("paired with %s (%s)", hello.Name, fp[:16])
 		return
@@ -79,7 +86,9 @@ func (d *Daemon) handlePeer(ctx context.Context, raw net.Conn) {
 	// advertised listen port, substituting the live source IP when the peer
 	// didn't name a concrete host. This corrects a stale/wrong stored port
 	// (e.g. after a DHCP change) on every inbound connect.
-	d.store.UpdateAddr(fp, d.resolvePeerAddr(hello.Addr, conn.RemoteAddr()))
+	if lan {
+		d.store.UpdateAddr(fp, d.resolvePeerAddr(hello.Addr, conn.RemoteAddr()))
+	}
 	// Persist the peer's FCM token so we can wake it later if direct dial fails.
 	d.store.UpdateFcmToken(fp, hello.FcmToken)
 	d.store.UpdateRNS(fp, hello.RNS)
@@ -90,7 +99,7 @@ func (d *Daemon) handlePeer(ctx context.Context, raw net.Conn) {
 }
 
 // receiveSession reads one session (files or clipboard) and sends acks.
-func (d *Daemon) receiveSession(ctx context.Context, conn *tls.Conn, peerName string) error {
+func (d *Daemon) receiveSession(ctx context.Context, conn net.Conn, peerName string) error {
 	start, err := proto.ReadHeader(conn)
 	if err == io.EOF {
 		// A Hello-only connection (pairing back-connect, Daemon.Hello) ends here.
@@ -120,7 +129,7 @@ func (d *Daemon) receiveSession(ctx context.Context, conn *tls.Conn, peerName st
 // receiveFilesWithProgress when they want to surface progress elsewhere.
 type progressCallback func(fileIndex int, bytesDone, totalBytes int64)
 
-func (d *Daemon) receiveClipboard(ctx context.Context, conn *tls.Conn, peerName string) error {
+func (d *Daemon) receiveClipboard(ctx context.Context, conn net.Conn, peerName string) error {
 	hdr, err := proto.ReadHeader(conn)
 	if err != nil {
 		return err
@@ -155,11 +164,11 @@ func (d *Daemon) receiveClipboard(ctx context.Context, conn *tls.Conn, peerName 
 	return nil
 }
 
-func (d *Daemon) receiveFiles(ctx context.Context, conn *tls.Conn, peerName string, manifest []proto.FileMeta, resume bool) error {
+func (d *Daemon) receiveFiles(ctx context.Context, conn net.Conn, peerName string, manifest []proto.FileMeta, resume bool) error {
 	return d.receiveFilesWithProgress(ctx, conn, peerName, manifest, resume, nil)
 }
 
-func (d *Daemon) receiveFilesWithProgress(ctx context.Context, conn *tls.Conn, peerName string, manifest []proto.FileMeta, resume bool, onProgress progressCallback) error {
+func (d *Daemon) receiveFilesWithProgress(ctx context.Context, conn net.Conn, peerName string, manifest []proto.FileMeta, resume bool, onProgress progressCallback) error {
 	if len(manifest) == 0 {
 		return fmt.Errorf("empty file manifest")
 	}
@@ -407,7 +416,7 @@ func partialBytes(slot *fileSlot, meta proto.FileMeta) int64 {
 // A partial left behind by a dropped connection is deliberately kept so the
 // next attempt can resume from it; only a partial that cannot be trusted
 // (integrity failure, protocol violation) is removed.
-func (d *Daemon) receiveOneFile(conn *tls.Conn, meta proto.FileMeta, slot *fileSlot, resumeOffset int64) (string, error) {
+func (d *Daemon) receiveOneFile(conn net.Conn, meta proto.FileMeta, slot *fileSlot, resumeOffset int64) (string, error) {
 	dest, tmp := slot.dest, slot.tmp
 
 	hasher := sha256.New()

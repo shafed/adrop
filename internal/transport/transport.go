@@ -15,6 +15,7 @@ import (
 	"net"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/shafed/adrop/internal/config"
 )
@@ -117,8 +118,14 @@ func DialPair(ctx context.Context, addr string, cert tls.Certificate) (*tls.Conn
 // Dial connects to addr, enforcing peer pinning, and returns the established
 // connection along with the peer's certificate fingerprint.
 func Dial(addr string, cert tls.Certificate, verify PeerVerifier) (*tls.Conn, string, error) {
+	return DialTimeout(addr, cert, verify, 0)
+}
+
+// DialTimeout is Dial giving up on the TCP connect after timeout (0: the
+// system's own, about two minutes for a host that does not answer).
+func DialTimeout(addr string, cert tls.Certificate, verify PeerVerifier, timeout time.Duration) (*tls.Conn, string, error) {
 	cfg := pinnedTLSConfig(cert, verify, false, false)
-	conn, err := tls.Dial("tcp", addr, cfg)
+	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: timeout}, "tcp", addr, cfg)
 	if err != nil {
 		return nil, "", err
 	}
@@ -140,4 +147,11 @@ func PeerFingerprint(conn *tls.Conn) (string, error) {
 		return "", ErrUntrustedPeer
 	}
 	return config.Fingerprint(state.PeerCertificates[0].Raw), nil
+}
+
+// PinnedConfig is the pinned TLS config of this device for transports other
+// than TCP (QUIC over a direct channel): the peer must present a trusted
+// certificate, exactly as on the LAN listener and dialer.
+func PinnedConfig(cert tls.Certificate, verify PeerVerifier, server bool) *tls.Config {
+	return pinnedTLSConfig(cert, verify, server, false)
 }

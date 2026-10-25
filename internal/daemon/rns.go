@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/shafed/adrop/internal/config"
+	"github.com/shafed/adrop/internal/direct"
 	"github.com/shafed/adrop/internal/rns"
 )
 
@@ -19,8 +20,12 @@ import (
 
 // signal is one message between paired devices over Reticulum.
 type signal struct {
-	Type string `json:"t"`            // "ping" | "pong"
-	ID   string `json:"id,omitempty"` // ties a pong to its ping
+	Type string `json:"t"`            // "ping" | "pong" | "ice-offer" | "ice-answer" | "ice-cand"
+	ID   string `json:"id,omitempty"` // ties a pong to its ping, ICE signals to their setup
+
+	Ufrag string `json:"u,omitempty"` // ice-offer, ice-answer
+	Pwd   string `json:"p,omitempty"`
+	Cand  string `json:"c,omitempty"` // ice-cand
 }
 
 // startRNS opens the Reticulum endpoint and the hub manager. Failures are
@@ -157,7 +162,9 @@ func (d *Daemon) rnsInbox(ctx context.Context, node *rns.Node) {
 				d.logger.Printf("rns: bad signal from %s: %v", dev.Name, err)
 				continue
 			}
-			d.logger.Printf("rns: %s from %s", s.Type, dev.Name)
+			if s.Type == "ping" || s.Type == "pong" || s.Type == "ice-offer" {
+				d.logger.Printf("rns: %s from %s", s.Type, dev.Name)
+			}
 			switch s.Type {
 			case "ping":
 				go func() {
@@ -167,6 +174,13 @@ func (d *Daemon) rnsInbox(ctx context.Context, node *rns.Node) {
 						d.logger.Printf("rns: pong to %s: %v", dev.Name, err)
 					}
 				}()
+			case "ice-offer":
+				go d.acceptDirect(ctx, dev, s)
+			case "ice-answer", "ice-cand":
+				select {
+				case d.iceInbox(s.ID) <- direct.Msg{Kind: s.Type[len("ice-"):], Ufrag: s.Ufrag, Pwd: s.Pwd, Cand: s.Cand}:
+				default:
+				}
 			case "pong":
 				d.pongMu.Lock()
 				if ch, ok := d.pongs[s.ID]; ok {
@@ -191,4 +205,10 @@ type rnsFields struct {
 
 	pongMu sync.Mutex
 	pongs  map[string]chan struct{}
+
+	// iceSetups queue the signals of direct-channel setups by ID; directOpt
+	// tunes them (tests: no STUN, loopback candidates).
+	iceMu     sync.Mutex
+	iceSetups map[string]chan direct.Msg
+	directOpt direct.Options
 }

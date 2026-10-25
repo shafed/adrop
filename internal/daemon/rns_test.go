@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/shafed/adrop/internal/direct"
 )
 
 // startRnsd runs the reference Reticulum daemon as a local hub, or skips
@@ -63,4 +65,35 @@ func TestPingOverReticulumAfterLANPairing(t *testing.T) {
 		t.Fatalf("ping over reticulum: %v", err)
 	}
 	t.Logf("ping a -> b over the hub: %v", rtt)
+}
+
+func TestSendFallsBackToDirectChannel(t *testing.T) {
+	hub := startRnsd(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	withRNS := func(o *Options) { o.Reticulum, o.RNSHubs = true, []string{hub} }
+	a := newTestDaemonWith(t, ctx, "a", withRNS)
+	b := newTestDaemonWith(t, ctx, "b", withRNS)
+	for _, td := range []*testDaemon{a, b} {
+		td.d.directOpt = direct.Options{STUN: []string{}, Loopback: true}
+		td.d.startRNS(ctx)
+	}
+	pair(t, a, b)
+
+	// b is now "in another network": its LAN address no longer answers.
+	a.store.UpdateAddr(b.store.Fingerprint(), "192.0.2.1:9")
+
+	src := filepath.Join(t.TempDir(), "far.txt")
+	if err := os.WriteFile(src, []byte("sent over a direct channel"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sctx, scancel := context.WithTimeout(ctx, 90*time.Second)
+	defer scancel()
+	if err := a.d.SendFiles(sctx, "b", []string{src}, func(string) {}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(b.download, "far.txt"))
+	if err != nil || string(got) != "sent over a direct channel" {
+		t.Fatalf("received %q: %v", got, err)
+	}
 }

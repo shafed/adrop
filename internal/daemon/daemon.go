@@ -16,6 +16,7 @@ import (
 
 	"github.com/shafed/adrop/internal/clipboard"
 	"github.com/shafed/adrop/internal/config"
+	"github.com/shafed/adrop/internal/direct"
 	"github.com/shafed/adrop/internal/ipc"
 	"github.com/shafed/adrop/internal/mdns"
 	"github.com/shafed/adrop/internal/transport"
@@ -165,6 +166,7 @@ func New(opt Options) (*Daemon, error) {
 	}
 	d.rnsEnabled, d.rnsHubs = opt.Reticulum, opt.RNSHubs
 	d.pongs = make(map[string]chan struct{})
+	d.iceSetups = make(map[string]chan direct.Msg)
 	if d.clipboardSet == nil {
 		d.clipboardSet = clipboard.Copy
 	}

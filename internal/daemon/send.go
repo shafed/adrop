@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -49,12 +49,24 @@ const (
 	mdnsRecoverTimeout = 2 * time.Second
 )
 
-func (d *Daemon) dialPeer(ctx context.Context, target string, folders ...bool) (*tls.Conn, config.Device, error) {
+func (d *Daemon) dialPeer(ctx context.Context, target string, folders ...bool) (net.Conn, config.Device, error) {
 	dev, ok := d.store.Lookup(target)
 	if !ok {
 		return nil, config.Device{}, fmt.Errorf("no trusted device matching %q", target)
 	}
-	conn, fp, err := transport.Dial(dev.Addr, d.store.Certificate(), d)
+	// With a direct channel to fall back on, a LAN address that does not
+	// answer is given up on quickly: the peer is likely in another network.
+	node, _ := d.rnsState()
+	canGoDirect := node != nil && dev.RNS != ""
+	lanTimeout := time.Duration(0)
+	if canGoDirect {
+		lanTimeout = 5 * time.Second
+	}
+	var conn net.Conn
+	tconn, fp, err := transport.DialTimeout(dev.Addr, d.store.Certificate(), d, lanTimeout)
+	if err == nil {
+		conn = tconn
+	}
 	// seenOnLAN and wake carry what the recovery attempts learned, so the error
 	// returned to the user can name the actual problem instead of repeating the
 	// same "connect: …" for three unrelated causes.
@@ -74,8 +86,9 @@ func (d *Daemon) dialPeer(ctx context.Context, target string, folders ...bool) (
 			if cur, ok := d.store.Lookup(target); ok && cur.Addr != dev.Addr {
 				dev = cur
 				d.logger.Printf("retrying %s at addr %s", dev.Name, dev.Addr)
-				conn, fp, err = transport.Dial(dev.Addr, d.store.Certificate(), d)
+				tconn, fp, err = transport.DialTimeout(dev.Addr, d.store.Certificate(), d, lanTimeout)
 				if err == nil {
+					conn = tconn
 					break
 				}
 			}
@@ -87,6 +100,18 @@ func (d *Daemon) dialPeer(ctx context.Context, target string, folders ...bool) (
 				return nil, dev, ctx.Err()
 			case <-time.After(mdnsRecoverPoll):
 			}
+		}
+	}
+	if err != nil && canGoDirect {
+		lanErr := err
+		var dc net.Conn
+		dc, fp, err = d.dialDirect(ctx, dev)
+		if err == nil {
+			conn = dc
+			d.logger.Printf("reached %s over a direct channel", dev.Name)
+		} else {
+			d.logger.Printf("direct channel to %s: %v", dev.Name, err)
+			err = lanErr
 		}
 	}
 	if err != nil {
@@ -125,8 +150,9 @@ func (d *Daemon) dialPeer(ctx context.Context, target string, folders ...bool) (
 					if cur, ok := d.store.Lookup(target); ok {
 						dev = cur
 					}
-					conn, fp, err = transport.Dial(dev.Addr, d.store.Certificate(), d)
+					tconn, fp, err = transport.Dial(dev.Addr, d.store.Certificate(), d)
 					if err == nil {
+						conn = tconn
 						d.logger.Printf("phone %s woke up; connected at %s", dev.Name, dev.Addr)
 						break
 					}
@@ -303,7 +329,7 @@ func (d *Daemon) SendFiles(ctx context.Context, target string, paths []string, p
 	return nil
 }
 
-func (d *Daemon) sendOneFile(ctx context.Context, conn *tls.Conn, index int, path string, m proto.FileMeta, resumeOffset int64, fp fileProgressFn) error {
+func (d *Daemon) sendOneFile(ctx context.Context, conn net.Conn, index int, path string, m proto.FileMeta, resumeOffset int64, fp fileProgressFn) error {
 	if m.IsDir {
 		if err := proto.WriteControl(conn, proto.Header{Type: proto.TypeFileHeader, FileIndex: index}); err != nil {
 			return err
