@@ -14,7 +14,10 @@ APPS_DIR := $(HOME)/.local/share/applications
 
 APP_DIR := $(HOME)/.local/lib/adrop-gui
 ICON_DIR := $(HOME)/.local/share/icons/hicolor
-FLUTTER ?= flutter
+# flutter on PATH, else the SDK cloned into ~/.local/share/flutter. Android
+# builds through the pulsar stand keep Gradle caches off the root SSD:
+#   make app-android FLUTTER="bash $PWD/../pulsar/scripts/android/emu.sh flutter"
+FLUTTER ?= $(shell command -v flutter 2>/dev/null || echo $(HOME)/.local/share/flutter/bin/flutter)
 
 all: build
 
@@ -59,8 +62,10 @@ windows:
 core-android:
 	bash scripts/build-core.sh
 
+# The APK carries the ABI the core was built for (scripts/build-core.sh:
+# android/arm64 unless ADROP_ANDROID_TARGET says otherwise).
 app-android: core-android
-	cd app && $(FLUTTER) build apk --release
+	cd app && $(FLUTTER) build apk --release --target-platform android-arm64
 
 # The window: a client of the daemon over its Unix socket, like the CLI.
 app-linux:

@@ -54,3 +54,12 @@ dependencies {
     // The Go core, built by scripts/build-core.sh android.
     implementation(files("libs/core.aar"))
 }
+
+// The release APK is arm64 only, like the core (scripts/build-core.sh). A
+// plugin's own libraries for other ABIs would make Android pick one of them
+// and miss libflutter and the core.
+androidComponents {
+    onVariants(selector().withBuildType("release")) { variant ->
+        variant.packaging.jniLibs.excludes.addAll(listOf("lib/armeabi-v7a/**", "lib/x86/**", "lib/x86_64/**"))
+    }
+}
