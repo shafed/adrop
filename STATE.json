@@ -1,13 +1,13 @@
 {
   "$comment": "Состояние текущей работы по PLAN.md. Правится на границе этапа, не на каждом коммите. Результат ворот — заметки refs/notes/gate (пишет scripts/verify.sh).",
-  "updated": "2026-10-23",
+  "updated": "2026-10-25",
   "stage": "Шаг 1 PLAN.md: прототип Go-ядра внутри Flutter",
-  "stage_status": "not_started",
+  "stage_status": "awaiting_device_check",
   "verification_command": "bash scripts/verify.sh",
   "verification_notes": [
     "Ворота: go vet, gofmt, vet с тегом gui, сборка без cgo, go test -race. Android не входит; --android добавляет testDebugUnitTest (нужны JAVA_HOME и ANDROID_HOME).",
     "Заметка ворот пишется только на чистом дереве и не в CI."
   ],
-  "next_action": "Начать шаг 1 PLAN.md по решению владельца.",
+  "next_action": "Владелец проверяет шаг 1 на телефоне: собрать APK (app/README.md), на ПК `adrop pair show`, URI в поле Pair, затем Hello; в журнале демона — `hello from <модель> proto (<fingerprint>)`. При успехе — шаг 2; при провале решение про Flutter пересматривается.",
   "blockers": []
 }

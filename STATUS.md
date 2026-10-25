@@ -23,6 +23,30 @@
   заменяется адресом источника соединения; без порта — `DefaultPort`
   (`resolvePeerAddr`). Адрес чинится при каждом входящем соединении.
 
+## Ядро и Flutter (шаг 1 PLAN.md, прототип)
+
+- Ядро — `core/`: тот же `daemon.Daemon`, только без слушателя и IPC;
+  наружу — `Start`, `Fingerprint`, `Pair`, `Peers`, `Hello`. Своей реализации
+  протокола у ядра нет.
+- Android: `gomobile bind` → `com.adrop.proto.core`; вызовы из Flutter через
+  канал `adrop/core` в `MainActivity.kt` на отдельном потоке. Linux:
+  `core/cshared` (`c-shared`), ответы — JSON `{ok,result,error}`, вызовы из
+  Dart в `Isolate.run`.
+- Прототип `app/` ставится как `com.adrop.proto` рядом с `com.adrop`, у него
+  своя идентичность (на Linux — `$XDG_DATA_HOME/adrop-proto`).
+- Размер `.aar`: 5,9 МБ только arm64, 12 МБ arm64+amd64, 25 МБ все четыре ABI.
+  Поэтому по умолчанию `scripts/build-core.sh android` собирает только arm64.
+- `golang.org/x/mobile` требует `go 1.26` в `go.mod`.
+- Android-сборки — через стенд `../pulsar/scripts/android/emu.sh flutter`:
+  Gradle-кэши и `build/` там на `/mnt/hdd`, сборка с `~/Android/Sdk` и
+  `~/.gradle` занимает на корневом SSD около 6 ГБ.
+
 ## Не проверено вживую
 
-Заполняется по ходу работы.
+- Шаг 1 на телефоне: Hello с прототипа на реальном телефоне по Wi-Fi до демона
+  на ПК. Проверено только на эмуляторе (x86_64, хост через `10.0.2.2`) и в окне
+  Linux на Xvfb, оба раза с отдельным тестовым демоном.
+- Работа Go-горутин, когда процесс Android уходит в фон.
+- Прототип в Hello объявляет адрес `<IP>:53127` — на телефоне это порт старого
+  приложения, поэтому отправка с ПК на устройство «… proto» не дойдёт.
+  Прототипу это не нужно; устройство можно убрать через `adrop revoke`.
