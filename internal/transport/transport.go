@@ -15,6 +15,7 @@ import (
 	"net"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/shafed/adrop/internal/config"
@@ -94,8 +95,10 @@ var ErrNoTapPairing = errors.New("transport: peer does not accept tap pairing")
 func DialPair(ctx context.Context, addr string, cert tls.Certificate) (*tls.Conn, string, error) {
 	cfg := pinnedTLSConfig(cert, nil, false, true)
 	cfg.NextProtos = []string{PairALPN}
-	d := tls.Dialer{Config: cfg}
-	raw, err := d.DialContext(ctx, "tcp", addr)
+	raw, err := dialTLS(func(control dialControl) (net.Conn, error) {
+		d := tls.Dialer{NetDialer: &net.Dialer{Control: control}, Config: cfg}
+		return d.DialContext(ctx, "tcp", addr)
+	})
 	if err != nil {
 		if strings.Contains(err.Error(), "bad certificate") {
 			return nil, "", ErrNoTapPairing
@@ -121,14 +124,37 @@ func Dial(addr string, cert tls.Certificate, verify PeerVerifier) (*tls.Conn, st
 	return DialTimeout(addr, cert, verify, 0)
 }
 
+// dialControl prepares a socket before it connects (net.Dialer.Control).
+type dialControl = func(network, address string, c syscall.RawConn) error
+
+// lanControl is set once, before any dial, by BindLANDials; nil elsewhere.
+var lanControl dialControl
+
+func setDialControl(c dialControl) { lanControl = c }
+
+// dialTLS dials with lanControl and, where that binding is refused at once,
+// without it: under a VPN that holds the app the interface is out of reach,
+// and the VPN's own route to the LAN is the one that works.
+func dialTLS(dial func(dialControl) (net.Conn, error)) (net.Conn, error) {
+	conn, err := dial(lanControl)
+	if err != nil && lanControl != nil &&
+		(errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH) || errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES)) {
+		return dial(nil)
+	}
+	return conn, err
+}
+
 // DialTimeout is Dial giving up on the TCP connect after timeout (0: the
 // system's own, about two minutes for a host that does not answer).
 func DialTimeout(addr string, cert tls.Certificate, verify PeerVerifier, timeout time.Duration) (*tls.Conn, string, error) {
 	cfg := pinnedTLSConfig(cert, verify, false, false)
-	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: timeout}, "tcp", addr, cfg)
+	raw, err := dialTLS(func(control dialControl) (net.Conn, error) {
+		return tls.DialWithDialer(&net.Dialer{Timeout: timeout, Control: control}, "tcp", addr, cfg)
+	})
 	if err != nil {
 		return nil, "", err
 	}
+	conn := raw.(*tls.Conn)
 	fp, err := PeerFingerprint(conn)
 	if err != nil {
 		conn.Close()
