@@ -311,6 +311,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _toast('No device selected');
       return;
     }
+    // Empty means "this PC's clipboard" only where the app can read one; on
+    // the phone it would wipe the clipboard of the device it goes to.
+    if (text.isEmpty && !b.canSendOwnClipboard) {
+      _toast('Type the text to send first');
+      return;
+    }
     try {
       final how = await b.sendText(
         target,
