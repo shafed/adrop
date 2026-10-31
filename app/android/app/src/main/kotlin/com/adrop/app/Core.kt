@@ -17,6 +17,7 @@ import java.util.concurrent.CopyOnWriteArraySet
 object Core {
     private const val TAG = "adrop"
     const val PORT = 53127
+    private const val START_WAIT_MS = 5000
 
     @Volatile
     var node: Node? = null
@@ -31,9 +32,13 @@ object Core {
     /** Received files land here, then move to MediaStore Downloads. */
     fun incoming(ctx: Context) = File(ctx.filesDir, "incoming")
 
+    @Volatile
+    private var startError: String? = null
+
     @Synchronized
     fun start(ctx: Context, platform: Platform): Node {
         node?.let { return it }
+        startError = null
         val opt = Options().apply {
             dataDir = File(ctx.filesDir, "core").path
             downloadDir = incoming(ctx).path
@@ -42,9 +47,14 @@ object Core {
             tapPair = setting(ctx, "tapPair")
             reticulum = setting(ctx, "reticulum")
         }
-        return GoCore.start(opt, platform).also {
-            node = it
-            Log.i(TAG, "core started: ${it.fingerprint()}")
+        return try {
+            GoCore.start(opt, platform).also {
+                node = it
+                Log.i(TAG, "core started: ${it.fingerprint()}")
+            }
+        } catch (e: Exception) {
+            startError = e.message ?: "$e"
+            throw e
         }
     }
 
@@ -54,7 +64,19 @@ object Core {
         node = null
     }
 
-    fun require(): Node = node ?: throw IllegalStateException("adrop is not running")
+    /**
+     * The running core. The service starts it on its own thread right as the
+     * app opens, so the UI's first calls wait for it rather than fail: until
+     * the UI's next poll it would show no devices. Call from a worker thread.
+     */
+    fun require(): Node {
+        repeat(START_WAIT_MS / 50) {
+            node?.let { return it }
+            startError?.let { throw IllegalStateException(it) }
+            Thread.sleep(50)
+        }
+        return node ?: throw IllegalStateException("adrop is not running")
+    }
 
     fun emit(json: String) = listeners.forEach { it(json) }
 

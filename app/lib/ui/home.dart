@@ -37,6 +37,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Backend get b => widget.backend;
 
   List<Device> _devices = [];
+  bool _devicesLoaded = false; // until then, an empty list says nothing
   List<NearbyDevice> _nearby = [];
   List<QueueItem> _queue = [];
   String? _target;
@@ -113,6 +114,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       setState(() {
         _daemonDown = null;
         _devices = devices;
+        _devicesLoaded = true;
         _nearby = nearby.where((n) => !n.paired).toList();
         _queue = queue;
         if (_target == null || !devices.any((d) => d.name == _target)) {
@@ -351,7 +353,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         if (_daemonDown != null) _daemonCard(),
         if (_inTitle != null) _receiveCard(),
         _section('Send to'),
-        if (_devices.isEmpty)
+        if (_devicesLoaded && _devices.isEmpty)
           const Text(
             'No paired devices yet. Pair one below or with the QR button above.',
           ),
