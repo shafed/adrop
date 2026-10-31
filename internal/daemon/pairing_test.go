@@ -29,6 +29,13 @@ func TestResolvePeerAddr(t *testing.T) {
 			want:       "192.168.0.112:7777",
 		},
 		{
+			// A phone under a VPN names the VPN's address, seen 2026-10-31 as
+			// 172.19.0.1 (tun0), but connects from its LAN address.
+			name:       "source ip beats an advertised vpn address",
+			advertised: "172.19.0.1:7777",
+			want:       "192.168.0.112:7777",
+		},
+		{
 			// The core bug: phone couldn't find its LAN IP so it sent 0.0.0.0,
 			// but its listen port (7777) is still authoritative. We must keep the
 			// port and fill in the source IP — NOT fall back to our own port.
@@ -66,6 +73,16 @@ func TestResolvePeerAddr(t *testing.T) {
 				t.Fatalf("resolvePeerAddr(%q) = %q, want %q", tc.advertised, got, tc.want)
 			}
 		})
+	}
+}
+
+// A loopback source says nothing about where the peer is reachable from
+// elsewhere: the advertised address stands.
+func TestResolvePeerAddrLoopbackSource(t *testing.T) {
+	d := &Daemon{port: DefaultPort}
+	got := d.resolvePeerAddr("192.168.0.112:7777", fakeAddr("127.0.0.1:48512"))
+	if got != "192.168.0.112:7777" {
+		t.Fatalf("got %q", got)
 	}
 }
 

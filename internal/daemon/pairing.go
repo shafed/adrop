@@ -166,11 +166,12 @@ func (d *Daemon) tryCompletePairing(fp, name, advertisedAddr string, remote net.
 //
 // The peer's advertised port is authoritative (it's the port the peer listens
 // on, which is not the same as the ephemeral source port of this connection).
-// The host, however, is only trustworthy if the peer named a concrete IP. When
-// the advertised host is missing or unspecified ("0.0.0.0"/"::") — e.g. the
-// phone couldn't determine its own LAN IP — we substitute the connection's
-// source IP but keep the advertised port. Only if no usable port was advertised
-// at all do we fall back to our own default port against the source IP.
+// The host is not: a phone under a VPN advertises the VPN's address (the route
+// to the internet goes through it) while it reaches us from its LAN address.
+// So the connection's source IP wins, and the advertised host is used only
+// when the source says nothing, on loopback (same machine, tests). Only if no
+// usable port was advertised at all do we fall back to our own default port
+// against the source IP.
 func (d *Daemon) resolvePeerAddr(advertised string, remote net.Addr) string {
 	remoteHost, _, _ := net.SplitHostPort(remote.String())
 
@@ -179,7 +180,9 @@ func (d *Daemon) resolvePeerAddr(advertised string, remote net.Addr) string {
 		// No usable advertised port: best we can do is source IP + our port.
 		return net.JoinHostPort(remoteHost, fmt.Sprint(d.port))
 	}
-	if ip := net.ParseIP(host); host == "" || ip == nil || ip.IsUnspecified() {
+	src := net.ParseIP(remoteHost)
+	ip := net.ParseIP(host)
+	if (src != nil && !src.IsLoopback()) || ip == nil || ip.IsUnspecified() {
 		host = remoteHost
 	}
 	return net.JoinHostPort(host, port)
