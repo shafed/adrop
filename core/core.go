@@ -22,6 +22,7 @@ import (
 	"github.com/shafed/adrop/internal/config"
 	"github.com/shafed/adrop/internal/daemon"
 	"github.com/shafed/adrop/internal/ipc"
+	"github.com/shafed/adrop/internal/transport"
 )
 
 // Platform is implemented by the app (Kotlin).
@@ -64,6 +65,7 @@ func Start(opt *Options, p Platform) (*Node, error) {
 	if p == nil {
 		return nil, errors.New("core: no platform")
 	}
+	transport.BindLANDials()
 	store, err := config.Open(opt.DataDir)
 	if err != nil {
 		return nil, err
