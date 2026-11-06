@@ -17,6 +17,7 @@ import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
 
 /**
  * Hands the Flutter UI's calls to the core in AdropService. Core calls may
@@ -31,6 +32,7 @@ class MainActivity : FlutterActivity() {
     private val worker = Executors.newCachedThreadPool()
     private val main = Handler(Looper.getMainLooper())
     private val shared = mutableListOf<String>()
+    private val copying = mutableListOf<Future<*>>()
     private var events: ((String) -> Unit)? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -60,7 +62,7 @@ class MainActivity : FlutterActivity() {
             Intent.ACTION_SEND -> {
                 val uri = intent.parcelable<Uri>(Intent.EXTRA_STREAM)
                 if (uri != null) {
-                    worker.execute { copyShared(listOf(uri)) }
+                    trackCopy { copyShared(listOf(uri)) }
                 } else {
                     intent.getStringExtra(Intent.EXTRA_TEXT)?.let { text ->
                         val f = File(cacheDir, "shared/text.txt").apply { parentFile?.mkdirs(); writeText(text) }
@@ -70,7 +72,7 @@ class MainActivity : FlutterActivity() {
             }
             Intent.ACTION_SEND_MULTIPLE -> {
                 val uris = intent.parcelableList<Uri>(Intent.EXTRA_STREAM) ?: return
-                worker.execute { copyShared(uris) }
+                trackCopy { copyShared(uris) }
             }
             Intent.ACTION_VIEW -> {
                 val link = intent.dataString ?: return
@@ -82,6 +84,17 @@ class MainActivity : FlutterActivity() {
                 }
             }
         }
+    }
+
+    private fun trackCopy(job: () -> Unit) {
+        val f = worker.submit { job() }
+        synchronized(copying) { copying.add(f) }
+    }
+
+    /** Waits for the copies of shared files that are still running. */
+    private fun awaitCopies() {
+        val pending = synchronized(copying) { copying.toList().also { copying.clear() } }
+        for (f in pending) runCatching { f.get() }
     }
 
     /** Copies shared content into the cache, where the core can read it as files. */
@@ -138,7 +151,7 @@ class MainActivity : FlutterActivity() {
                             if (key != "background") restartCore()
                             null
                         }
-                        "takeShared" -> synchronized(shared) { shared.toList().also { shared.clear() } }
+                        "takeShared" -> { awaitCopies(); synchronized(shared) { shared.toList().also { shared.clear() } } }
                         "open" -> open(call.arguments as String).let { null }
                         "pickFolder" -> {
                             main.post {

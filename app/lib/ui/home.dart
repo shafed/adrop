@@ -46,6 +46,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   // Outgoing batch.
   List<String> _staged = [];
   bool _sending = false;
+  bool _sentStaged = false;
   String _outLine = '';
   String? _outError;
 
@@ -65,6 +66,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _refresh();
     _subscribe();
+    _text.addListener(() => setState(() {}));
     _poll = Timer.periodic(const Duration(seconds: 5), (_) => _refresh());
     HardwareKeyboard.instance.addHandler(_onKey);
     if (b is ChannelBackend) _takeShared();
@@ -90,7 +92,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Future<void> _takeShared() async {
     final shared = await (b as ChannelBackend).takeShared();
-    if (shared.isNotEmpty) _stage(shared, sendNow: _target != null);
+    if (shared.isNotEmpty) _stage(shared, sendNow: false);
   }
 
   void _subscribe() {
@@ -195,6 +197,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void _stage(List<String> paths, {bool sendNow = true}) {
     setState(() {
       _staged = paths;
+      _sentStaged = false;
       _outError = null;
       _outLine = '';
     });
@@ -218,6 +221,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             ? 'Sent ${_staged.length} item(s) to $target'
             : 'Queued: $queued',
       );
+      _sentStaged = true;
       if (queued.isNotEmpty) _refresh();
     } catch (e) {
       setState(() => _outError = '$e');
@@ -228,7 +232,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Future<void> _chooseFiles() async {
     final files = await openFiles();
-    if (files.isNotEmpty) _stage(files.map((f) => f.path).toList());
+    if (files.isNotEmpty) _stage(files.map((f) => f.path).toList(), sendNow: desktop);
+  }
+
+  Future<void> _choosePhotos() async {
+    final photos = await ImagePicker().pickMultiImage();
+    if (photos.isNotEmpty) _stage(photos.map((f) => f.path).toList(), sendNow: false);
   }
 
   Future<void> _chooseFolder() async {
@@ -237,12 +246,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final dir = b is ChannelBackend
         ? await (b as ChannelBackend).pickFolder()
         : await getDirectoryPath();
-    if (dir != null) _stage([dir]);
+    if (dir != null) _stage([dir], sendNow: desktop);
   }
 
   Future<void> _takePhoto() async {
     final photo = await ImagePicker().pickImage(source: ImageSource.camera);
-    if (photo != null) _stage([photo.path]);
+    if (photo != null) _stage([photo.path], sendNow: false);
   }
 
   /// Ctrl+V anywhere but in a text field sends copied file paths, like the
@@ -299,7 +308,33 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _stage(paths);
   }
 
-  Future<void> _sendText() => _sendTextOrClipboard(_text.text);
+  bool get desktop => !Platform.isAndroid;
+
+  bool get _hasStaged => _staged.isNotEmpty && !_sentStaged;
+
+  /// The one Send button: the staged files and the typed text go together;
+  /// with neither, the PC sends its own clipboard.
+  Future<void> _send() async {
+    final hasText = _text.text.isNotEmpty;
+    final hadFiles = _hasStaged;
+    if (hadFiles) await _sendStaged();
+    if (hasText || (!hadFiles && b.canSendOwnClipboard)) {
+      await _sendTextOrClipboard(_text.text);
+    }
+  }
+
+  String get _sendLabel {
+    final text = _text.text.isNotEmpty;
+    if (_hasStaged && text) return 'Send files and text';
+    if (_hasStaged) return 'Send ${_staged.length} item(s)';
+    if (text) return 'Send text';
+    return b.canSendOwnClipboard ? 'Send clipboard' : 'Send';
+  }
+
+  bool get _canSend =>
+      _target != null &&
+      !_sending &&
+      (_hasStaged || _text.text.isNotEmpty || b.canSendOwnClipboard);
 
   /// Sends this PC's clipboard, as the "Send clipboard" button does with an
   /// empty text field.
@@ -352,7 +387,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    final desktop = !Platform.isAndroid;
     Widget body = ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -406,6 +440,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               icon: const Icon(Icons.attach_file),
               label: const Text('Choose files'),
             ),
+            if (!desktop)
+              FilledButton.tonalIcon(
+                onPressed: _target == null || _sending ? null : _choosePhotos,
+                icon: const Icon(Icons.photo_library),
+                label: const Text('Photos'),
+              ),
             OutlinedButton.icon(
               onPressed: _target == null || _sending ? null : _chooseFolder,
               icon: const Icon(Icons.folder),
@@ -434,13 +474,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             border: const OutlineInputBorder(),
           ),
         ),
-        const SizedBox(height: 8),
-        Align(
-          alignment: Alignment.centerLeft,
+        const SizedBox(height: 12),
+        SizedBox(
+          width: double.infinity,
           child: FilledButton.icon(
-            onPressed: _target == null ? null : _sendText,
-            icon: const Icon(Icons.content_paste_go),
-            label: Text(b.canSendOwnClipboard ? 'Send clipboard' : 'Send text'),
+            onPressed: _canSend ? _send : null,
+            icon: const Icon(Icons.send),
+            label: Text(
+              _target == null ? 'Select a device' : '$_sendLabel → $_target',
+            ),
           ),
         ),
         if (_history.isNotEmpty) ...[
